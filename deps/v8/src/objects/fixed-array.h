@@ -134,16 +134,18 @@ class FixedArray
   inline bool is_the_hole(Isolate* isolate, int index);
 
   // Setter that doesn't need write barrier.
-#if defined(_WIN32) && !defined(_WIN64)
+#if !defined(_WIN32) || (defined(_WIN64) && _MSC_VER < 1930 && __cplusplus < 201703L)
+  inline void set(int index, Smi value);
+#else
   inline void set(int index, Smi value) {
+#if !defined(_WIN32)
     DCHECK_NE(map(), GetReadOnlyRoots().fixed_cow_array_map());
+#endif
     DCHECK_LT(static_cast<unsigned>(index), static_cast<unsigned>(length()));
     DCHECK(Object(value).IsSmi());
     int offset = OffsetOfElementAt(index);
     RELAXED_WRITE_FIELD(*this, offset, value);
   }
-#else
-  inline void set(int index, Smi value);
 #endif
 
   // Setter with explicit barrier mode.
@@ -152,10 +154,13 @@ class FixedArray
   // Setters for frequently used oddballs located in old space.
   inline void set_undefined(int index);
   inline void set_undefined(Isolate* isolate, int index);
+  inline void set_undefined(ReadOnlyRoots ro_roots, int index);
   inline void set_null(int index);
   inline void set_null(Isolate* isolate, int index);
+  inline void set_null(ReadOnlyRoots ro_roots, int index);
   inline void set_the_hole(int index);
   inline void set_the_hole(Isolate* isolate, int index);
+  inline void set_the_hole(ReadOnlyRoots ro_roots, int index);
 
   inline ObjectSlot GetFirstElementAddress();
   inline bool ContainsOnlySmisOrHoles();
@@ -209,6 +214,7 @@ class FixedArray
 
   // Dispatched behavior.
   DECL_PRINTER(FixedArray)
+  DECL_VERIFIER(FixedArray)
 
   int AllocatedSize();
 
@@ -224,10 +230,6 @@ class FixedArray
 
  private:
   STATIC_ASSERT(kHeaderSize == Internals::kFixedArrayHeaderSize);
-
-  inline void set_undefined(ReadOnlyRoots ro_roots, int index);
-  inline void set_null(ReadOnlyRoots ro_roots, int index);
-  inline void set_the_hole(ReadOnlyRoots ro_roots, int index);
 
   TQ_OBJECT_CONSTRUCTORS(FixedArray)
 };
@@ -295,6 +297,10 @@ class WeakFixedArray
   inline void Set(
       int index, MaybeObject value,
       WriteBarrierMode mode = WriteBarrierMode::UPDATE_WRITE_BARRIER);
+
+  static inline Handle<WeakFixedArray> EnsureSpace(Isolate* isolate,
+                                                   Handle<WeakFixedArray> array,
+                                                   int length);
 
   // Forward declare the non-atomic (set_)length defined in torque.
   using TorqueGeneratedWeakFixedArray::length;
@@ -374,6 +380,7 @@ class WeakArrayList
   // instead.
   inline void Set(int index, MaybeObject value,
                   WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+  inline void Set(int index, Smi value);
 
   static constexpr int SizeForCapacity(int capacity) {
     return SizeFor(capacity);
@@ -389,7 +396,7 @@ class WeakArrayList
   inline void CopyElements(Isolate* isolate, int dst_index, WeakArrayList src,
                            int src_index, int len, WriteBarrierMode mode);
 
-  V8_EXPORT_PRIVATE bool IsFull();
+  V8_EXPORT_PRIVATE bool IsFull() const;
 
   int AllocatedSize();
 
@@ -454,6 +461,10 @@ class ArrayList : public TorqueGeneratedArrayList<ArrayList, FixedArray> {
                                                  Handle<ArrayList> array,
                                                  Handle<Object> obj1,
                                                  Handle<Object> obj2);
+  V8_EXPORT_PRIVATE static Handle<ArrayList> Add(Isolate* isolate,
+                                                 Handle<ArrayList> array,
+                                                 Handle<Object> obj1, Smi obj2,
+                                                 Smi obj3, Smi obj4);
   static Handle<ArrayList> New(Isolate* isolate, int size);
 
   // Returns the number of elements in the list, not the allocated size, which
@@ -472,6 +483,8 @@ class ArrayList : public TorqueGeneratedArrayList<ArrayList, FixedArray> {
   inline void Set(int index, Object obj,
                   WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
+  inline void Set(int index, Smi obj);
+
   // Set the element at index to undefined. This does not change the Length().
   inline void Clear(int index, Object undefined);
 
@@ -481,12 +494,15 @@ class ArrayList : public TorqueGeneratedArrayList<ArrayList, FixedArray> {
 
   static const int kHeaderFields = 1;
 
- private:
-  static Handle<ArrayList> EnsureSpace(Isolate* isolate,
-                                       Handle<ArrayList> array, int length);
   static const int kLengthIndex = 0;
   static const int kFirstIndex = 1;
   STATIC_ASSERT(kHeaderFields == kFirstIndex);
+
+  DECL_VERIFIER(ArrayList)
+
+ private:
+  static Handle<ArrayList> EnsureSpace(Isolate* isolate,
+                                       Handle<ArrayList> array, int length);
   TQ_OBJECT_CONSTRUCTORS(ArrayList)
 };
 
@@ -508,8 +524,8 @@ class ByteArray : public TorqueGeneratedByteArray<ByteArray, FixedArrayBase> {
   inline void set(int index, byte value);
 
   // Copy in / copy out whole byte slices.
-  inline void copy_out(int index, byte* buffer, int length);
-  inline void copy_in(int index, const byte* buffer, int length);
+  inline void copy_out(int index, byte* buffer, int slice_length);
+  inline void copy_in(int index, const byte* buffer, int slice_length);
 
   // Treat contents as an int array.
   inline int get_int(int index) const;
@@ -520,6 +536,9 @@ class ByteArray : public TorqueGeneratedByteArray<ByteArray, FixedArrayBase> {
 
   inline uint32_t get_uint32_relaxed(int index) const;
   inline void set_uint32_relaxed(int index, uint32_t value);
+
+  inline uint16_t get_uint16(int index) const;
+  inline void set_uint16(int index, uint16_t value);
 
   // Clear uninitialized padding space. This ensures that the snapshot content
   // is deterministic.
@@ -588,6 +607,13 @@ class PodArray : public ByteArray {
   bool matches(const T* buffer, int length) {
     DCHECK_LE(length, this->length());
     return memcmp(GetDataStartAddress(), buffer, length * sizeof(T)) == 0;
+  }
+
+  bool matches(int offset, const T* buffer, int length) {
+    DCHECK_LE(offset, this->length());
+    DCHECK_LE(offset + length, this->length());
+    return memcmp(GetDataStartAddress() + sizeof(T) * offset, buffer,
+                  length * sizeof(T)) == 0;
   }
 
   T get(int index) {

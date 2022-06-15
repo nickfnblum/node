@@ -4,6 +4,7 @@
 
 #include "include/cppgc/explicit-management.h"
 
+#include <algorithm>
 #include <tuple>
 
 #include "src/heap/cppgc/heap-base.h"
@@ -26,7 +27,8 @@ bool InGC(HeapHandle& heap_handle) {
 
 }  // namespace
 
-void FreeUnreferencedObject(HeapHandle& heap_handle, void* object) {
+void ExplicitManagementImpl::FreeUnreferencedObject(HeapHandle& heap_handle,
+                                                    void* object) {
   if (InGC(heap_handle)) {
     return;
   }
@@ -34,18 +36,23 @@ void FreeUnreferencedObject(HeapHandle& heap_handle, void* object) {
   auto& header = HeapObjectHeader::FromObject(object);
   header.Finalize();
 
+  size_t object_size = 0;
+  USE(object_size);
+
   // `object` is guaranteed to be of type GarbageCollected, so getting the
   // BasePage is okay for regular and large objects.
   BasePage* base_page = BasePage::FromPayload(object);
   if (base_page->is_large()) {  // Large object.
-    base_page->space()->RemovePage(base_page);
-    base_page->heap()->stats_collector()->NotifyExplicitFree(
+    object_size = LargePage::From(base_page)->ObjectSize();
+    base_page->space().RemovePage(base_page);
+    base_page->heap().stats_collector()->NotifyExplicitFree(
         LargePage::From(base_page)->PayloadSize());
     LargePage::Destroy(LargePage::From(base_page));
   } else {  // Regular object.
     const size_t header_size = header.AllocatedSize();
+    object_size = header.ObjectSize();
     auto* normal_page = NormalPage::From(base_page);
-    auto& normal_space = *static_cast<NormalPageSpace*>(base_page->space());
+    auto& normal_space = *static_cast<NormalPageSpace*>(&base_page->space());
     auto& lab = normal_space.linear_allocation_buffer();
     ConstAddress payload_end = header.ObjectEnd();
     SetMemoryInaccessible(&header, header_size);
@@ -53,12 +60,19 @@ void FreeUnreferencedObject(HeapHandle& heap_handle, void* object) {
       lab.Set(reinterpret_cast<Address>(&header), lab.size() + header_size);
       normal_page->object_start_bitmap().ClearBit(lab.start());
     } else {  // Returning to free list.
-      base_page->heap()->stats_collector()->NotifyExplicitFree(header_size);
+      base_page->heap().stats_collector()->NotifyExplicitFree(header_size);
       normal_space.free_list().Add({&header, header_size});
       // No need to update the bitmap as the same bit is reused for the free
       // list entry.
     }
   }
+#if defined(CPPGC_YOUNG_GENERATION)
+  auto& heap_base = HeapBase::From(heap_handle);
+  heap_base.remembered_set().InvalidateRememberedSlotsInRange(
+      object, reinterpret_cast<uint8_t*>(object) + object_size);
+  // If this object was registered as remembered, remove it.
+  heap_base.remembered_set().InvalidateRememberedSourceObject(header);
+#endif  // defined(CPPGC_YOUNG_GENERATION)
 }
 
 namespace {
@@ -69,7 +83,7 @@ bool Grow(HeapObjectHeader& header, BasePage& base_page, size_t new_size,
   DCHECK_GE(size_delta, kAllocationGranularity);
   DCHECK(!base_page.is_large());
 
-  auto& normal_space = *static_cast<NormalPageSpace*>(base_page.space());
+  auto& normal_space = *static_cast<NormalPageSpace*>(&base_page.space());
   auto& lab = normal_space.linear_allocation_buffer();
   if (lab.start() == header.ObjectEnd() && lab.size() >= size_delta) {
     // LABs are considered used memory which means that no allocated size
@@ -88,7 +102,7 @@ bool Shrink(HeapObjectHeader& header, BasePage& base_page, size_t new_size,
   DCHECK_GE(size_delta, kAllocationGranularity);
   DCHECK(!base_page.is_large());
 
-  auto& normal_space = *static_cast<NormalPageSpace*>(base_page.space());
+  auto& normal_space = *static_cast<NormalPageSpace*>(&base_page.space());
   auto& lab = normal_space.linear_allocation_buffer();
   Address free_start = header.ObjectEnd() - size_delta;
   if (lab.start() == header.ObjectEnd()) {
@@ -98,17 +112,19 @@ bool Shrink(HeapObjectHeader& header, BasePage& base_page, size_t new_size,
     lab.Set(free_start, lab.size() + size_delta);
     SetMemoryInaccessible(lab.start(), size_delta);
     header.SetAllocatedSize(new_size);
-    return true;
-  }
-  // Heuristic: Only return memory to the free list if the block is larger than
-  // the smallest size class.
-  if (size_delta >= ObjectAllocator::kSmallestSpaceSize) {
+  } else if (size_delta >= ObjectAllocator::kSmallestSpaceSize) {
+    // Heuristic: Only return memory to the free list if the block is larger
+    // than the smallest size class.
     SetMemoryInaccessible(free_start, size_delta);
-    base_page.heap()->stats_collector()->NotifyExplicitFree(size_delta);
+    base_page.heap().stats_collector()->NotifyExplicitFree(size_delta);
     normal_space.free_list().Add({free_start, size_delta});
     NormalPage::From(&base_page)->object_start_bitmap().SetBit(free_start);
     header.SetAllocatedSize(new_size);
   }
+#if defined(CPPGC_YOUNG_GENERATION)
+  base_page.heap().remembered_set().InvalidateRememberedSlotsInRange(
+      free_start, free_start + size_delta);
+#endif  // defined(CPPGC_YOUNG_GENERATION)
   // Return success in any case, as we want to avoid that embedders start
   // copying memory because of small deltas.
   return true;
@@ -116,12 +132,12 @@ bool Shrink(HeapObjectHeader& header, BasePage& base_page, size_t new_size,
 
 }  // namespace
 
-bool Resize(void* object, size_t new_object_size) {
+bool ExplicitManagementImpl::Resize(void* object, size_t new_object_size) {
   // `object` is guaranteed to be of type GarbageCollected, so getting the
   // BasePage is okay for regular and large objects.
   BasePage* base_page = BasePage::FromPayload(object);
 
-  if (InGC(*base_page->heap())) {
+  if (InGC(base_page->heap())) {
     return false;
   }
 

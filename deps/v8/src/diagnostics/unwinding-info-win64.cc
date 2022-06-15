@@ -17,6 +17,11 @@
 #error "Unsupported OS"
 #endif  // V8_OS_WIN_X64
 
+#include <windows.h>
+
+// This has to come after windows.h.
+#include <versionhelpers.h>  // For IsWindows8OrGreater().
+
 // Forward declaration to keep this independent of Win8
 NTSYSAPI
 DWORD
@@ -46,7 +51,6 @@ NTAPI
 RtlDeleteGrowableFunctionTable(
     _In_ PVOID DynamicTable
     );
-
 
 namespace v8 {
 namespace internal {
@@ -202,8 +206,8 @@ void InitUnwindingRecord(Record* record, size_t code_size_in_bytes) {
   masm.movq(rax, reinterpret_cast<uint64_t>(&CRASH_HANDLER_FUNCTION_NAME));
   masm.jmp(rax);
   DCHECK_LE(masm.instruction_size(), sizeof(record->exception_thunk));
-  base::Memcpy(&record->exception_thunk[0], masm.buffer_start(),
-               masm.instruction_size());
+  memcpy(&record->exception_thunk[0], masm.buffer_start(),
+         masm.instruction_size());
 }
 
 #elif defined(V8_OS_WIN_ARM64)
@@ -480,8 +484,8 @@ void InitUnwindingRecord(Record* record, size_t code_size_in_bytes) {
            Operand(reinterpret_cast<uint64_t>(&CRASH_HANDLER_FUNCTION_NAME)));
   masm.Br(x16);
   DCHECK_LE(masm.instruction_size(), sizeof(record->exception_thunk));
-  base::Memcpy(&record->exception_thunk[0], masm.buffer_start(),
-               masm.instruction_size());
+  memcpy(&record->exception_thunk[0], masm.buffer_start(),
+         masm.instruction_size());
 }
 
 #endif  // V8_OS_WIN_X64

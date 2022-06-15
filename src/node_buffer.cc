@@ -20,7 +20,6 @@
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "node_buffer.h"
-#include "allocated_buffer-inl.h"
 #include "node.h"
 #include "node_blob.h"
 #include "node_errors.h"
@@ -41,8 +40,9 @@
 
 #define THROW_AND_RETURN_IF_OOB(r)                                          \
   do {                                                                      \
-    if ((r).IsNothing()) return;                                            \
-    if (!(r).FromJust())                                                    \
+    Maybe<bool> m = (r);                                                    \
+    if (m.IsNothing()) return;                                              \
+    if (!m.FromJust())                                                      \
       return node::THROW_ERR_OUT_OF_RANGE(env, "Index out of range");       \
   } while (0)                                                               \
 
@@ -219,9 +219,8 @@ inline MUST_USE_RESULT Maybe<bool> ParseArrayIndex(Environment* env,
     return Just(false);
 
   // Check that the result fits in a size_t.
-  const uint64_t kSizeMax = static_cast<uint64_t>(static_cast<size_t>(-1));
   // coverity[pointless_expression]
-  if (static_cast<uint64_t>(tmp_i) > kSizeMax)
+  if (static_cast<uint64_t>(tmp_i) > std::numeric_limits<size_t>::max())
     return Just(false);
 
   *ret = static_cast<size_t>(tmp_i);
@@ -352,16 +351,31 @@ MaybeLocal<Object> New(Isolate* isolate, size_t length) {
 
 
 MaybeLocal<Object> New(Environment* env, size_t length) {
-  EscapableHandleScope scope(env->isolate());
+  Isolate* isolate(env->isolate());
+  EscapableHandleScope scope(isolate);
 
   // V8 currently only allows a maximum Typed Array index of max Smi.
   if (length > kMaxLength) {
-    env->isolate()->ThrowException(ERR_BUFFER_TOO_LARGE(env->isolate()));
+    isolate->ThrowException(ERR_BUFFER_TOO_LARGE(isolate));
     return Local<Object>();
   }
 
-  return scope.EscapeMaybe(
-      AllocatedBuffer::AllocateManaged(env, length).ToBuffer());
+  Local<ArrayBuffer> ab;
+  {
+    NoArrayBufferZeroFillScope no_zero_fill_scope(env->isolate_data());
+    std::unique_ptr<BackingStore> bs =
+        ArrayBuffer::NewBackingStore(isolate, length);
+
+    CHECK(bs);
+
+    ab = ArrayBuffer::New(isolate, std::move(bs));
+  }
+
+  MaybeLocal<Object> obj =
+      New(env, ab, 0, ab->ByteLength())
+          .FromMaybe(Local<Uint8Array>());
+
+  return scope.EscapeMaybe(obj);
 }
 
 
@@ -380,20 +394,33 @@ MaybeLocal<Object> Copy(Isolate* isolate, const char* data, size_t length) {
 
 
 MaybeLocal<Object> Copy(Environment* env, const char* data, size_t length) {
-  EscapableHandleScope scope(env->isolate());
+  Isolate* isolate(env->isolate());
+  EscapableHandleScope scope(isolate);
 
   // V8 currently only allows a maximum Typed Array index of max Smi.
   if (length > kMaxLength) {
-    env->isolate()->ThrowException(ERR_BUFFER_TOO_LARGE(env->isolate()));
+    isolate->ThrowException(ERR_BUFFER_TOO_LARGE(isolate));
     return Local<Object>();
   }
 
-  AllocatedBuffer ret = AllocatedBuffer::AllocateManaged(env, length);
-  if (length > 0) {
-    memcpy(ret.data(), data, length);
+  Local<ArrayBuffer> ab;
+  {
+    NoArrayBufferZeroFillScope no_zero_fill_scope(env->isolate_data());
+    std::unique_ptr<BackingStore> bs =
+        ArrayBuffer::NewBackingStore(isolate, length);
+
+    CHECK(bs);
+
+    memcpy(bs->Data(), data, length);
+
+    ab = ArrayBuffer::New(isolate, std::move(bs));
   }
 
-  return scope.EscapeMaybe(ret.ToBuffer());
+  MaybeLocal<Object> obj =
+      New(env, ab, 0, ab->ByteLength())
+          .FromMaybe(Local<Uint8Array>());
+
+  return scope.EscapeMaybe(obj);
 }
 
 
@@ -466,11 +493,28 @@ MaybeLocal<Object> New(Environment* env,
                        size_t length) {
   if (length > 0) {
     CHECK_NOT_NULL(data);
-    CHECK(length <= kMaxLength);
+    // V8 currently only allows a maximum Typed Array index of max Smi.
+    if (length > kMaxLength) {
+      Isolate* isolate(env->isolate());
+      isolate->ThrowException(ERR_BUFFER_TOO_LARGE(isolate));
+      return Local<Object>();
+    }
   }
 
-  auto free_callback = [](char* data, void* hint) { free(data); };
-  return New(env, data, length, free_callback, nullptr);
+  EscapableHandleScope handle_scope(env->isolate());
+
+  auto free_callback = [](void* data, size_t length, void* deleter_data) {
+    free(data);
+  };
+  std::unique_ptr<BackingStore> bs =
+      v8::ArrayBuffer::NewBackingStore(data, length, free_callback, nullptr);
+
+  Local<ArrayBuffer> ab = v8::ArrayBuffer::New(env->isolate(), std::move(bs));
+
+  Local<Object> obj;
+  if (Buffer::New(env, ab, 0, length).ToLocal(&obj))
+    return handle_scope.Escape(obj);
+  return Local<Object>();
 }
 
 namespace {
@@ -1077,13 +1121,25 @@ static void EncodeUtf8String(const FunctionCallbackInfo<Value>& args) {
 
   Local<String> str = args[0].As<String>();
   size_t length = str->Utf8Length(isolate);
-  AllocatedBuffer buf = AllocatedBuffer::AllocateManaged(env, length);
-  str->WriteUtf8(isolate,
-                 buf.data(),
-                 -1,  // We are certain that `data` is sufficiently large
-                 nullptr,
-                 String::NO_NULL_TERMINATION | String::REPLACE_INVALID_UTF8);
-  auto array = Uint8Array::New(buf.ToArrayBuffer(), 0, length);
+
+  Local<ArrayBuffer> ab;
+  {
+    NoArrayBufferZeroFillScope no_zero_fill_scope(env->isolate_data());
+    std::unique_ptr<BackingStore> bs =
+        ArrayBuffer::NewBackingStore(isolate, length);
+
+    CHECK(bs);
+
+    str->WriteUtf8(isolate,
+                   static_cast<char*>(bs->Data()),
+                   -1,  // We are certain that `data` is sufficiently large
+                   nullptr,
+                   String::NO_NULL_TERMINATION | String::REPLACE_INVALID_UTF8);
+
+    ab = ArrayBuffer::New(isolate, std::move(bs));
+  }
+
+  auto array = Uint8Array::New(ab, 0, length);
   args.GetReturnValue().Set(array);
 }
 
@@ -1266,8 +1322,6 @@ void Initialize(Local<Object> target,
   env->SetMethod(target, "utf8Write", StringWrite<UTF8>);
 
   env->SetMethod(target, "getZeroFillToggle", GetZeroFillToggle);
-
-  Blob::Initialize(env, target);
 }
 
 }  // anonymous namespace
@@ -1311,9 +1365,6 @@ void RegisterExternalReferences(ExternalReferenceRegistry* registry) {
 
   registry->Register(DetachArrayBuffer);
   registry->Register(CopyArrayBuffer);
-
-  Blob::RegisterExternalReferences(registry);
-  FixedSizeBlobCopyJob::RegisterExternalReferences(registry);
 }
 
 }  // namespace Buffer

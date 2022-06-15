@@ -6,8 +6,6 @@
  */
 'use strict'
 exports[`test/lib/load-all-commands.js TAP load each command access > must match snapshot 1`] = `
-npm access
-
 Set access level on published packages
 
 Usage:
@@ -28,8 +26,6 @@ Run "npm help access" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command adduser > must match snapshot 1`] = `
-npm adduser
-
 Add a registry user account
 
 Usage:
@@ -37,6 +33,7 @@ npm adduser
 
 Options:
 [--registry <registry>] [--scope <@scope>]
+[--auth-type <legacy|webauthn|sso|saml|oauth>]
 
 aliases: login, add-user
 
@@ -44,8 +41,6 @@ Run "npm help adduser" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command audit > must match snapshot 1`] = `
-npm audit
-
 Run a security audit
 
 Usage:
@@ -55,15 +50,14 @@ Options:
 [--audit-level <info|low|moderate|high|critical|none>] [--dry-run] [-f|--force]
 [--json] [--package-lock-only]
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+[--foreground-scripts] [--ignore-scripts]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 Run "npm help audit" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command bin > must match snapshot 1`] = `
-npm bin
-
 Display npm bin folder
 
 Usage:
@@ -75,16 +69,25 @@ Options:
 Run "npm help bin" for more info
 `
 
-exports[`test/lib/load-all-commands.js TAP load each command bugs > must match snapshot 1`] = `
-npm bugs
+exports[`test/lib/load-all-commands.js TAP load each command birthday > must match snapshot 1`] = `
+Birthday, deprecated
 
+Usage:
+npm birthday
+
+Run "npm help birthday" for more info
+`
+
+exports[`test/lib/load-all-commands.js TAP load each command bugs > must match snapshot 1`] = `
 Report bugs for a package in a web browser
 
 Usage:
-npm bugs [<pkgname>]
+npm bugs [<pkgname> [<pkgname> ...]]
 
 Options:
 [--no-browser|--browser <browser>] [--registry <registry>]
+[-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+[-ws|--workspaces] [--include-workspace-root]
 
 alias: issues
 
@@ -92,8 +95,6 @@ Run "npm help bugs" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command cache > must match snapshot 1`] = `
-npm cache
-
 Manipulates packages cache
 
 Usage:
@@ -102,7 +103,8 @@ npm cache add <folder>
 npm cache add <tarball url>
 npm cache add <git url>
 npm cache add <name>@<version>
-npm cache clean
+npm cache clean [<key>]
+npm cache ls [<name>@<version>]
 npm cache verify
 
 Options:
@@ -112,15 +114,14 @@ Run "npm help cache" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command ci > must match snapshot 1`] = `
-npm ci
-
-Install a project with a clean slate
+Clean install a project
 
 Usage:
 npm ci
 
 Options:
-[--no-audit] [--ignore-scripts] [--script-shell <script-shell>]
+[--no-audit] [--foreground-scripts] [--ignore-scripts]
+[--script-shell <script-shell>]
 
 aliases: clean-install, ic, install-clean, isntall-clean
 
@@ -128,8 +129,6 @@ Run "npm help ci" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command completion > must match snapshot 1`] = `
-npm completion
-
 Tab Completion for npm
 
 Usage:
@@ -139,8 +138,6 @@ Run "npm help completion" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command config > must match snapshot 1`] = `
-npm config
-
 Manage the npm configuration files
 
 Usage:
@@ -160,8 +157,6 @@ Run "npm help config" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command dedupe > must match snapshot 1`] = `
-npm dedupe
-
 Reduce duplication in the package tree
 
 Usage:
@@ -172,7 +167,7 @@ Options:
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--ignore-scripts]
 [--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 alias: ddp
 
@@ -180,8 +175,6 @@ Run "npm help dedupe" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command deprecate > must match snapshot 1`] = `
-npm deprecate
-
 Deprecate a version of a package
 
 Usage:
@@ -194,8 +187,6 @@ Run "npm help deprecate" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command diff > must match snapshot 1`] = `
-npm diff
-
 The registry diff command
 
 Usage:
@@ -207,14 +198,12 @@ Options:
 [--diff-no-prefix] [--diff-src-prefix <path>] [--diff-dst-prefix <path>]
 [--diff-text] [-g|--global] [--tag <tag>]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 Run "npm help diff" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command dist-tag > must match snapshot 1`] = `
-npm dist-tag
-
 Modify package distribution tags
 
 Usage:
@@ -224,7 +213,7 @@ npm dist-tag ls [<pkg>]
 
 Options:
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 alias: dist-tags
 
@@ -232,8 +221,6 @@ Run "npm help dist-tag" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command docs > must match snapshot 1`] = `
-npm docs
-
 Open documentation for a package in a web browser
 
 Usage:
@@ -242,7 +229,7 @@ npm docs [<pkgname> [<pkgname> ...]]
 Options:
 [--no-browser|--browser <browser>] [--registry <registry>]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 alias: home
 
@@ -250,8 +237,6 @@ Run "npm help docs" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command doctor > must match snapshot 1`] = `
-npm doctor
-
 Check your npm environment
 
 Usage:
@@ -264,8 +249,6 @@ Run "npm help doctor" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command edit > must match snapshot 1`] = `
-npm edit
-
 Edit an installed package
 
 Usage:
@@ -278,8 +261,6 @@ Run "npm help edit" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command exec > must match snapshot 1`] = `
-npm exec
-
 Run a command from a local or remote npm package
 
 Usage:
@@ -292,7 +273,7 @@ Options:
 [--package <pkg>[@<version>] [--package <pkg>[@<version>] ...]]
 [-c|--call <call>]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 alias: x
 
@@ -300,8 +281,6 @@ Run "npm help exec" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command explain > must match snapshot 1`] = `
-npm explain
-
 Explain installed packages
 
 Usage:
@@ -316,8 +295,6 @@ Run "npm help explain" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command explore > must match snapshot 1`] = `
-npm explore
-
 Browse an installed package
 
 Usage:
@@ -330,8 +307,6 @@ Run "npm help explore" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command find-dupes > must match snapshot 1`] = `
-npm find-dupes
-
 Find duplication in the package tree
 
 Usage:
@@ -342,14 +317,12 @@ Options:
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--ignore-scripts]
 [--no-audit] [--no-bin-links] [--no-fund]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 Run "npm help find-dupes" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command fund > must match snapshot 1`] = `
-npm fund
-
 Retrieve funding information
 
 Usage:
@@ -364,8 +337,6 @@ Run "npm help fund" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command get > must match snapshot 1`] = `
-npm get
-
 Get a value from the npm configuration
 
 Usage:
@@ -375,8 +346,6 @@ Run "npm help get" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command help > must match snapshot 1`] = `
-npm help
-
 Get help on npm
 
 Usage:
@@ -390,9 +359,19 @@ alias: hlep
 Run "npm help help" for more info
 `
 
-exports[`test/lib/load-all-commands.js TAP load each command hook > must match snapshot 1`] = `
-npm hook
+exports[`test/lib/load-all-commands.js TAP load each command help-search > must match snapshot 1`] = `
+Search npm help documentation
 
+Usage:
+npm help-search <text>
+
+Options:
+[-l|--long]
+
+Run "npm help help-search" for more info
+`
+
+exports[`test/lib/load-all-commands.js TAP load each command hook > must match snapshot 1`] = `
 Manage registry hooks
 
 Usage:
@@ -408,8 +387,6 @@ Run "npm help hook" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command init > must match snapshot 1`] = `
-npm init
-
 Create a package.json file
 
 Usage:
@@ -420,7 +397,7 @@ npm init [<@scope>/]<name> (same as \`npx [<@scope>/]create-<name>\`)
 Options:
 [-y|--yes] [-f|--force]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--no-workspaces-update] [--include-workspace-root]
 
 aliases: create, innit
 
@@ -428,8 +405,6 @@ Run "npm help init" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command install > must match snapshot 1`] = `
-npm install
-
 Install a package
 
 Usage:
@@ -445,29 +420,28 @@ npm install <git:// url>
 npm install <github username>/<github project>
 
 Options:
-[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer]
+[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer|--save-bundle]
 [-E|--save-exact] [-g|--global] [--global-style] [--legacy-bundling]
-[--strict-peer-deps] [--no-package-lock]
-[--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--ignore-scripts]
-[--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
+[--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+[--strict-peer-deps] [--no-package-lock] [--foreground-scripts]
+[--ignore-scripts] [--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
-aliases: i, in, ins, inst, insta, instal, isnt, isnta, isntal, add
+aliases: add, i, in, ins, inst, insta, instal, isnt, isnta, isntal, isntall
 
 Run "npm help install" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command install-ci-test > must match snapshot 1`] = `
-npm install-ci-test
-
 Install a project with a clean slate and run tests
 
 Usage:
 npm install-ci-test
 
 Options:
-[--no-audit] [--ignore-scripts] [--script-shell <script-shell>]
+[--no-audit] [--foreground-scripts] [--ignore-scripts]
+[--script-shell <script-shell>]
 
 alias: cit
 
@@ -475,8 +449,6 @@ Run "npm help install-ci-test" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command install-test > must match snapshot 1`] = `
-npm install-test
-
 Install package(s) and run tests
 
 Usage:
@@ -492,13 +464,13 @@ npm install-test <git:// url>
 npm install-test <github username>/<github project>
 
 Options:
-[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer]
+[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer|--save-bundle]
 [-E|--save-exact] [-g|--global] [--global-style] [--legacy-bundling]
-[--strict-peer-deps] [--no-package-lock]
-[--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--ignore-scripts]
-[--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
+[--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+[--strict-peer-deps] [--no-package-lock] [--foreground-scripts]
+[--ignore-scripts] [--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 alias: it
 
@@ -506,8 +478,6 @@ Run "npm help install-test" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command link > must match snapshot 1`] = `
-npm link
-
 Symlink a package folder
 
 Usage:
@@ -515,13 +485,13 @@ npm link (in package dir)
 npm link [<@scope>/]<pkg>[@<version>]
 
 Options:
-[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer]
+[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer|--save-bundle]
 [-E|--save-exact] [-g|--global] [--global-style] [--legacy-bundling]
 [--strict-peer-deps] [--no-package-lock]
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--ignore-scripts]
 [--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 alias: ln
 
@@ -529,8 +499,6 @@ Run "npm help link" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command ll > must match snapshot 1`] = `
-npm ll
-
 List installed packages
 
 Usage:
@@ -541,7 +509,7 @@ Options:
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--link]
 [--package-lock-only] [--unicode]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 alias: la
 
@@ -549,8 +517,6 @@ Run "npm help ll" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command login > must match snapshot 1`] = `
-npm adduser
-
 Add a registry user account
 
 Usage:
@@ -558,6 +524,7 @@ npm adduser
 
 Options:
 [--registry <registry>] [--scope <@scope>]
+[--auth-type <legacy|webauthn|sso|saml|oauth>]
 
 aliases: login, add-user
 
@@ -565,8 +532,6 @@ Run "npm help adduser" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command logout > must match snapshot 1`] = `
-npm logout
-
 Log out of the registry
 
 Usage:
@@ -579,8 +544,6 @@ Run "npm help logout" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command ls > must match snapshot 1`] = `
-npm ls
-
 List installed packages
 
 Usage:
@@ -591,7 +554,7 @@ Options:
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--link]
 [--package-lock-only] [--unicode]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 alias: list
 
@@ -599,8 +562,6 @@ Run "npm help ls" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command org > must match snapshot 1`] = `
-npm org
-
 Manage orgs
 
 Usage:
@@ -617,8 +578,6 @@ Run "npm help org" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command outdated > must match snapshot 1`] = `
-npm outdated
-
 Check for outdated packages
 
 Usage:
@@ -632,8 +591,6 @@ Run "npm help outdated" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command owner > must match snapshot 1`] = `
-npm owner
-
 Manage package owners
 
 Usage:
@@ -643,6 +600,8 @@ npm owner ls [<@scope>/]<pkg>
 
 Options:
 [--registry <registry>] [--otp <otp>]
+[-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+[-ws|--workspaces]
 
 alias: author
 
@@ -650,8 +609,6 @@ Run "npm help owner" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command pack > must match snapshot 1`] = `
-npm pack
-
 Create a tarball from a package
 
 Usage:
@@ -660,14 +617,12 @@ npm pack [[<@scope>/]<pkg>...]
 Options:
 [--dry-run] [--json] [--pack-destination <pack-destination>]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 Run "npm help pack" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command ping > must match snapshot 1`] = `
-npm ping
-
 Ping npm registry
 
 Usage:
@@ -680,14 +635,14 @@ Run "npm help ping" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command pkg > must match snapshot 1`] = `
-npm pkg
-
 Manages your package.json
 
 Usage:
 npm pkg set <key>=<value> [<key>=<value> ...]
 npm pkg get [<key> [<key> ...]]
 npm pkg delete <key> [<key> ...]
+npm pkg set [<array>[<index>].<key>=<value> ...]
+npm pkg set [<array>[].<key>=<value> ...]
 
 Options:
 [-f|--force] [--json]
@@ -698,8 +653,6 @@ Run "npm help pkg" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command prefix > must match snapshot 1`] = `
-npm prefix
-
 Display prefix
 
 Usage:
@@ -712,8 +665,6 @@ Run "npm help prefix" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command profile > must match snapshot 1`] = `
-npm profile
-
 Change settings on your registry profile
 
 Usage:
@@ -729,8 +680,6 @@ Run "npm help profile" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command prune > must match snapshot 1`] = `
-npm prune
-
 Remove extraneous packages
 
 Usage:
@@ -738,15 +687,14 @@ npm prune [[<@scope>/]<pkg>...]
 
 Options:
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]] [--dry-run]
-[--json] [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[--json] [--foreground-scripts] [--ignore-scripts]
+[-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 Run "npm help prune" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command publish > must match snapshot 1`] = `
-npm publish
-
 Publish a package
 
 Usage:
@@ -755,23 +703,21 @@ npm publish [<folder>]
 Options:
 [--tag <tag>] [--access <restricted|public>] [--dry-run] [--otp <otp>]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 Run "npm help publish" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command rebuild > must match snapshot 1`] = `
-npm rebuild
-
 Rebuild a package
 
 Usage:
 npm rebuild [[<@scope>/]<name>[@<version>] ...]
 
 Options:
-[-g|--global] [--no-bin-links] [--ignore-scripts]
+[-g|--global] [--no-bin-links] [--foreground-scripts] [--ignore-scripts]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 alias: rb
 
@@ -779,24 +725,20 @@ Run "npm help rebuild" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command repo > must match snapshot 1`] = `
-npm repo
-
 Open package repository page in the browser
 
 Usage:
 npm repo [<pkgname> [<pkgname> ...]]
 
 Options:
-[--no-browser|--browser <browser>]
+[--no-browser|--browser <browser>] [--registry <registry>]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 Run "npm help repo" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command restart > must match snapshot 1`] = `
-npm restart
-
 Restart a package
 
 Usage:
@@ -809,8 +751,6 @@ Run "npm help restart" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command root > must match snapshot 1`] = `
-npm root
-
 Display npm root
 
 Usage:
@@ -823,8 +763,6 @@ Run "npm help root" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command run-script > must match snapshot 1`] = `
-npm run-script
-
 Run arbitrary package scripts
 
 Usage:
@@ -832,7 +770,7 @@ npm run-script <command> [-- <args>]
 
 Options:
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces] [--if-present] [--ignore-scripts]
+[-ws|--workspaces] [--include-workspace-root] [--if-present] [--ignore-scripts]
 [--script-shell <script-shell>]
 
 aliases: run, rum, urn
@@ -841,8 +779,6 @@ Run "npm help run-script" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command search > must match snapshot 1`] = `
-npm search
-
 Search for packages
 
 Usage:
@@ -853,14 +789,12 @@ Options:
 [--no-description] [--searchopts <searchopts>] [--searchexclude <searchexclude>]
 [--registry <registry>] [--prefer-online] [--prefer-offline] [--offline]
 
-aliases: s, se, find
+aliases: find, s, se
 
 Run "npm help search" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command set > must match snapshot 1`] = `
-npm set
-
 Set a value in the npm configuration
 
 Usage:
@@ -870,23 +804,19 @@ Run "npm help set" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command set-script > must match snapshot 1`] = `
-npm set-script
-
-Set tasks in the scripts section of package.json
+Set tasks in the scripts section of package.json, deprecated
 
 Usage:
 npm set-script [<script>] [<command>]
 
 Options:
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
 Run "npm help set-script" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command shrinkwrap > must match snapshot 1`] = `
-npm shrinkwrap
-
 Lock down dependency versions for publication
 
 Usage:
@@ -896,22 +826,18 @@ Run "npm help shrinkwrap" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command star > must match snapshot 1`] = `
-npm star
-
 Mark your favorite packages
 
 Usage:
 npm star [<pkg>...]
 
 Options:
-[--registry <registry>] [--unicode]
+[--registry <registry>] [--unicode] [--otp <otp>]
 
 Run "npm help star" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command stars > must match snapshot 1`] = `
-npm stars
-
 View packages marked as favorites
 
 Usage:
@@ -924,8 +850,6 @@ Run "npm help stars" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command start > must match snapshot 1`] = `
-npm start
-
 Start a package
 
 Usage:
@@ -938,8 +862,6 @@ Run "npm help start" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command stop > must match snapshot 1`] = `
-npm stop
-
 Stop a package
 
 Usage:
@@ -952,8 +874,6 @@ Run "npm help stop" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command team > must match snapshot 1`] = `
-npm team
-
 Manage organization teams and team memberships
 
 Usage:
@@ -970,8 +890,6 @@ Run "npm help team" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command test > must match snapshot 1`] = `
-npm test
-
 Test a package
 
 Usage:
@@ -986,8 +904,6 @@ Run "npm help test" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command token > must match snapshot 1`] = `
-npm token
-
 Manage your authentication tokens
 
 Usage:
@@ -1003,26 +919,22 @@ Run "npm help token" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command uninstall > must match snapshot 1`] = `
-npm uninstall
-
 Remove a package
 
 Usage:
 npm uninstall [<@scope>/]<pkg>...
 
 Options:
-[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer]
+[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer|--save-bundle]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
-aliases: un, unlink, remove, rm, r
+aliases: unlink, remove, rm, r, un
 
 Run "npm help uninstall" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command unpublish > must match snapshot 1`] = `
-npm unpublish
-
 Remove a package from the registry
 
 Usage:
@@ -1037,8 +949,6 @@ Run "npm help unpublish" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command unstar > must match snapshot 1`] = `
-npm unstar
-
 Remove an item from your favorite packages
 
 Usage:
@@ -1051,19 +961,19 @@ Run "npm help unstar" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command update > must match snapshot 1`] = `
-npm update
-
 Update packages
 
 Usage:
 npm update [<pkg>...]
 
 Options:
-[-g|--global] [--global-style] [--legacy-bundling] [--strict-peer-deps]
-[--no-package-lock] [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+[-S|--save|--no-save|--save-prod|--save-dev|--save-optional|--save-peer|--save-bundle]
+[-g|--global] [--global-style] [--legacy-bundling]
+[--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+[--strict-peer-deps] [--no-package-lock] [--foreground-scripts]
 [--ignore-scripts] [--no-audit] [--no-bin-links] [--no-fund] [--dry-run]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root] [--install-links]
 
 aliases: up, upgrade, udpate
 
@@ -1071,8 +981,6 @@ Run "npm help update" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command version > must match snapshot 1`] = `
-npm version
-
 Bump a package version
 
 Usage:
@@ -1082,7 +990,7 @@ Options:
 [--allow-same-version] [--no-commit-hooks] [--no-git-tag-version] [--json]
 [--preid prerelease-id] [--sign-git-tag]
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--no-workspaces-update] [--include-workspace-root]
 
 alias: verison
 
@@ -1090,8 +998,6 @@ Run "npm help version" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command view > must match snapshot 1`] = `
-npm view
-
 View registry info
 
 Usage:
@@ -1099,16 +1005,14 @@ npm view [<@scope>/]<pkg>[@<version>] [<field>[.subfield]...]
 
 Options:
 [--json] [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
-[-ws|--workspaces]
+[-ws|--workspaces] [--include-workspace-root]
 
-aliases: v, info, show
+aliases: info, show, v
 
 Run "npm help view" for more info
 `
 
 exports[`test/lib/load-all-commands.js TAP load each command whoami > must match snapshot 1`] = `
-npm whoami
-
 Display npm username
 
 Usage:

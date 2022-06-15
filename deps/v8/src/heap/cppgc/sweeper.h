@@ -10,6 +10,7 @@
 #include "include/cppgc/heap.h"
 #include "src/base/macros.h"
 #include "src/base/platform/time.h"
+#include "src/heap/cppgc/memory.h"
 
 namespace cppgc {
 
@@ -26,11 +27,17 @@ class V8_EXPORT_PRIVATE Sweeper final {
   struct SweepingConfig {
     using SweepingType = cppgc::Heap::SweepingType;
     enum class CompactableSpaceHandling { kSweep, kIgnore };
+    enum class FreeMemoryHandling { kDoNotDiscard, kDiscardWherePossible };
 
     SweepingType sweeping_type = SweepingType::kIncrementalAndConcurrent;
     CompactableSpaceHandling compactable_space_handling =
         CompactableSpaceHandling::kSweep;
+    FreeMemoryHandling free_memory_handling = FreeMemoryHandling::kDoNotDiscard;
   };
+
+  static constexpr bool CanDiscardMemory() {
+    return CheckMemoryIsInaccessibleIsNoop();
+  }
 
   explicit Sweeper(HeapBase&);
   ~Sweeper();
@@ -41,6 +48,7 @@ class V8_EXPORT_PRIVATE Sweeper final {
   // Sweeper::Start assumes the heap holds no linear allocation buffers.
   void Start(SweepingConfig);
   void FinishIfRunning();
+  void FinishIfOutOfWork();
   void NotifyDoneIfNeeded();
   // SweepForAllocationIfRunning sweeps the given |space| until a slot that can
   // fit an allocation of size |size| is found. Returns true if a slot was

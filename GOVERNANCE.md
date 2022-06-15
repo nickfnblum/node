@@ -15,16 +15,17 @@
 
 ## Triagers
 
-Triagers assess newly-opened issues in the nodejs/node and nodejs/help
-repositories. There is no GitHub team for triagers at the moment.
+Triagers assess newly-opened issues in the [nodejs/node][] and [nodejs/help][]
+repositories. The GitHub team for Node.js triagers is @nodejs/issue-triage.
+Triagers are given the "Triage" GitHub role and have:
 
-Triagers have:
-* ability to label issues
-* ability to comment, close, and reopen issues
+* Ability to label issues and pull requests
+* Ability to comment, close, and reopen issues and pull requests
 
 See:
 
-* [A guide for triagers](./doc/guides/contributing/issues.md#triaging-a-bug-report)
+* [List of triagers](./README.md#triagers)
+* [A guide for triagers](./doc/contributing/issues.md#triaging-a-bug-report)
 
 ## Collaborators
 
@@ -53,7 +54,7 @@ result in collaborators removing their opposition.
 See:
 
 * [List of collaborators](./README.md#current-project-team-members)
-* [A guide for collaborators](./doc/guides/collaborator-guide.md)
+* [A guide for collaborators](./doc/contributing/collaborator-guide.md)
 
 ### Collaborator activities
 
@@ -63,8 +64,12 @@ See:
 * Participation in working groups
 * Merging pull requests
 
-The TSC can remove inactive collaborators or provide them with _Emeritus_
+The TSC can remove inactive collaborators or provide them with _emeritus_
 status. Emeriti may request that the TSC restore them to active status.
+
+A collaborator is automatically made emeritus (and removed from active
+collaborator status) if it has been more than 18 months since the collaborator
+has authored or approved a commit that has landed.
 
 ## Technical Steering Committee
 
@@ -86,9 +91,8 @@ Charter need approval by the OpenJS Foundation Cross-Project Council (CPC).
 
 ### TSC meetings
 
-The TSC meets in a voice conference call. Each year, the TSC elects a chair to
-run the meetings. The TSC streams its meetings for public viewing on YouTube or
-a similar service.
+The TSC meets in a video conference call. Each year, the TSC elects a chair to
+run the meetings. The TSC streams its meetings for public viewing on YouTube.
 
 The TSC agenda includes issues that are at an impasse. The intention of the
 agenda is not to review or approve all patches. Collaborators review and approve
@@ -152,8 +156,8 @@ the nomination fails.
 
 There are steps a nominator can take in advance to make a nomination as
 frictionless as possible. To request feedback from other collaborators in
- private, use the [collaborators discussion page][]
- (which only collaborators may view). A nominator may also work with the
+private, use the [collaborators discussion page][]
+(which only collaborators may view). A nominator may also work with the
 nominee to improve their contribution profile.
 
 Collaborators might overlook someone with valuable contributions. In that case,
@@ -174,4 +178,5 @@ The TSC follows a [Consensus Seeking][] decision-making model per the
 [Consensus Seeking]: https://en.wikipedia.org/wiki/Consensus-seeking_decision-making
 [TSC Charter]: https://github.com/nodejs/TSC/blob/HEAD/TSC-Charter.md
 [collaborators discussion page]: https://github.com/orgs/nodejs/teams/collaborators/discussions
+[nodejs/help]: https://github.com/nodejs/help
 [nodejs/node]: https://github.com/nodejs/node

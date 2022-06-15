@@ -11,7 +11,7 @@
 <hr class="line"/>
 
 * [Assertion testing](assert.md)
-* [Async_context](async_context.md)
+* [Asynchronous context tracking](async_context.md)
 * [Async hooks](async_hooks.md)
 * [Buffer](buffer.md)
 * [C++ addons](addons.md)
@@ -21,6 +21,7 @@
 * [Cluster](cluster.md)
 * [Command-line options](cli.md)
 * [Console](console.md)
+* [Corepack](corepack.md)
 * [Crypto](crypto.md)
 * [Debugger](debugger.md)
 * [Deprecated APIs](deprecations.md)
@@ -38,7 +39,7 @@
 * [Internationalization](intl.md)
 * [Modules: CommonJS modules](modules.md)
 * [Modules: ECMAScript modules](esm.md)
-* [Modules: `module` API](module.md)
+* [Modules: `node:module` API](module.md)
 * [Modules: Packages](packages.md)
 * [Net](net.md)
 * [OS](os.md)
@@ -53,6 +54,7 @@
 * [Report](report.md)
 * [Stream](stream.md)
 * [String decoder](string_decoder.md)
+* [Test runner](test.md)
 * [Timers](timers.md)
 * [TLS/SSL](tls.md)
 * [Trace events](tracing.md)

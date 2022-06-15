@@ -75,7 +75,7 @@ if (common.isWindows) {
 
 const endianness = os.endianness();
 is.string(endianness);
-assert.ok(/[BL]E/.test(endianness));
+assert.match(endianness, /[BL]E/);
 
 const hostname = os.hostname();
 is.string(hostname);
@@ -110,7 +110,7 @@ is.string(release);
 assert.ok(release.length > 0);
 // TODO: Check format on more than just AIX
 if (common.isAIX)
-  assert.ok(/^\d+\.\d+$/.test(release));
+  assert.match(release, /^\d+\.\d+$/);
 
 const platform = os.platform();
 is.string(platform);
@@ -138,7 +138,7 @@ switch (platform) {
     const expected = [{
       address: '127.0.0.1',
       netmask: '255.0.0.0',
-      family: 'IPv4',
+      family: 4,
       mac: '00:00:00:00:00:00',
       internal: true,
       cidr: '127.0.0.1/8'
@@ -154,7 +154,7 @@ switch (platform) {
     const expected = [{
       address: '127.0.0.1',
       netmask: '255.0.0.0',
-      family: 'IPv4',
+      family: 4,
       mac: '00:00:00:00:00:00',
       internal: true,
       cidr: '127.0.0.1/8'

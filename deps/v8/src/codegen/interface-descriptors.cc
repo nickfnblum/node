@@ -19,16 +19,16 @@ void CallInterfaceDescriptorData::InitializeRegisters(
 #ifdef DEBUG
   {
     // Make sure that the registers are all valid, and don't alias each other.
-    RegList reglist = 0;
+    RegList reglist;
     for (int i = 0; i < register_parameter_count; ++i) {
       Register reg = registers[i];
       DCHECK(reg.is_valid());
-      DCHECK_EQ(reglist & reg.bit(), 0);
+      DCHECK(!reglist.has(reg));
       DCHECK_NE(reg, kRootRegister);
 #ifdef V8_COMPRESS_POINTERS_IN_SHARED_CAGE
       DCHECK_NE(reg, kPtrComprCageBaseRegister);
 #endif
-      reglist = CombineRegLists(reglist, reg.bit());
+      reglist.set(reg);
     }
   }
 #endif
@@ -124,6 +124,32 @@ bool CallInterfaceDescriptor::IsValidFloatParameterRegister(Register reg) {
   return true;
 #endif
 }
+
+#if DEBUG
+template <typename DerivedDescriptor>
+void StaticCallInterfaceDescriptor<DerivedDescriptor>::Verify(
+    CallInterfaceDescriptorData* data) {}
+// static
+void WriteBarrierDescriptor::Verify(CallInterfaceDescriptorData* data) {
+  DCHECK(!AreAliased(ObjectRegister(), SlotAddressRegister(), ValueRegister()));
+  // The default parameters should not clobber vital registers in order to
+  // reduce code size:
+  DCHECK(!AreAliased(ObjectRegister(), kContextRegister,
+                     kInterpreterAccumulatorRegister));
+  DCHECK(!AreAliased(SlotAddressRegister(), kContextRegister,
+                     kInterpreterAccumulatorRegister));
+  DCHECK(!AreAliased(ValueRegister(), kContextRegister,
+                     kInterpreterAccumulatorRegister));
+  DCHECK(!AreAliased(SlotAddressRegister(), kJavaScriptCallNewTargetRegister));
+  // Coincidental: to make calling from various builtins easier.
+  DCHECK_EQ(ObjectRegister(), kJSFunctionRegister);
+  // We need a certain set of registers by default:
+  RegList allocatable_regs = data->allocatable_registers();
+  DCHECK(allocatable_regs.has(kContextRegister));
+  DCHECK(allocatable_regs.has(kReturnRegister0));
+  VerifyArgumentRegisterCount(data, 4);
+}
+#endif  // DEBUG
 
 }  // namespace internal
 }  // namespace v8

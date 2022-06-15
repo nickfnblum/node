@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --expose-wasm --experimental-wasm-reftypes --experimental-wasm-return-call
+// Flags: --expose-wasm --experimental-wasm-return-call
 
-load("test/mjsunit/wasm/wasm-module-builder.js");
+d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
 (function IndirectCallToNonZeroTable() {
   print(arguments.callee.name);

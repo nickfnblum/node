@@ -18,11 +18,16 @@ using v8::Value;
 
 CallbackScope::CallbackScope(Isolate* isolate,
                              Local<Object> object,
+                             async_context async_context)
+  : CallbackScope(Environment::GetCurrent(isolate), object, async_context) {}
+
+CallbackScope::CallbackScope(Environment* env,
+                             Local<Object> object,
                              async_context asyncContext)
-  : private_(new InternalCallbackScope(Environment::GetCurrent(isolate),
+  : private_(new InternalCallbackScope(env,
                                        object,
                                        asyncContext)),
-    try_catch_(isolate) {
+    try_catch_(env->isolate()) {
   try_catch_.SetVerbose(true);
 }
 
@@ -59,10 +64,17 @@ InternalCallbackScope::InternalCallbackScope(Environment* env,
   Isolate* isolate = env->isolate();
 
   HandleScope handle_scope(isolate);
-  // If you hit this assertion, you forgot to enter the v8::Context first.
-  CHECK_EQ(Environment::GetCurrent(isolate), env);
+  Local<Context> current_context = isolate->GetCurrentContext();
+  // If you hit this assertion, the caller forgot to enter the right Node.js
+  // Environment's v8::Context first.
+  // We first check `env->context() != current_context` because the contexts
+  // likely *are* the same, in which case we can skip the slightly more
+  // expensive Environment::GetCurrent() call.
+  if (UNLIKELY(env->context() != current_context)) {
+    CHECK_EQ(Environment::GetCurrent(isolate), env);
+  }
 
-  env->isolate()->SetIdle(false);
+  isolate->SetIdle(false);
 
   env->async_hooks()->push_async_context(
     async_context_.async_id, async_context_.trigger_async_id, object);

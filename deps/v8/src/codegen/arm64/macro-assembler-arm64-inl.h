@@ -1041,13 +1041,13 @@ void TurboAssembler::InitializeRootRegister() {
 #endif
 }
 
-void MacroAssembler::SmiTag(Register dst, Register src) {
+void TurboAssembler::SmiTag(Register dst, Register src) {
   DCHECK(dst.Is64Bits() && src.Is64Bits());
   DCHECK(SmiValuesAre32Bits() || SmiValuesAre31Bits());
   Lsl(dst, src, kSmiShift);
 }
 
-void MacroAssembler::SmiTag(Register smi) { SmiTag(smi, smi); }
+void TurboAssembler::SmiTag(Register smi) { SmiTag(smi, smi); }
 
 void TurboAssembler::SmiUntag(Register dst, Register src) {
   DCHECK(dst.Is64Bits() && src.Is64Bits());
@@ -1090,6 +1090,19 @@ void TurboAssembler::SmiUntag(Register dst, const MemOperand& src) {
 }
 
 void TurboAssembler::SmiUntag(Register smi) { SmiUntag(smi, smi); }
+
+void TurboAssembler::SmiToInt32(Register smi) {
+  DCHECK(smi.Is64Bits());
+  if (FLAG_enable_slow_asserts) {
+    AssertSmi(smi);
+  }
+  DCHECK(SmiValuesAre32Bits() || SmiValuesAre31Bits());
+  if (COMPRESS_POINTERS_BOOL) {
+    Asr(smi.W(), smi.W(), kSmiShift);
+  } else {
+    Lsr(smi, smi, kSmiShift);
+  }
+}
 
 void TurboAssembler::JumpIfSmi(Register value, Label* smi_label,
                                Label* not_smi_label) {
@@ -1228,58 +1241,6 @@ void TurboAssembler::Peek(const CPURegister& dst, const Operand& offset) {
 #endif
 }
 
-template <TurboAssembler::StoreLRMode lr_mode>
-void TurboAssembler::PushCPURegList(CPURegList registers) {
-  DCHECK_IMPLIES((lr_mode == kDontStoreLR), !registers.IncludesAliasOf(lr));
-#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
-  if (lr_mode == kSignLR && registers.IncludesAliasOf(lr)) {
-    Pacibsp();
-  }
-#endif
-
-  int size = registers.RegisterSizeInBytes();
-  DCHECK_EQ(0, (size * registers.Count()) % 16);
-
-  // Push up to four registers at a time.
-  while (!registers.IsEmpty()) {
-    int count_before = registers.Count();
-    const CPURegister& src0 = registers.PopHighestIndex();
-    const CPURegister& src1 = registers.PopHighestIndex();
-    const CPURegister& src2 = registers.PopHighestIndex();
-    const CPURegister& src3 = registers.PopHighestIndex();
-    int count = count_before - registers.Count();
-    PushHelper(count, size, src0, src1, src2, src3);
-  }
-}
-
-template <TurboAssembler::LoadLRMode lr_mode>
-void TurboAssembler::PopCPURegList(CPURegList registers) {
-  int size = registers.RegisterSizeInBytes();
-  DCHECK_EQ(0, (size * registers.Count()) % 16);
-
-#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
-  bool contains_lr = registers.IncludesAliasOf(lr);
-  DCHECK_IMPLIES((lr_mode == kDontLoadLR), !contains_lr);
-#endif
-
-  // Pop up to four registers at a time.
-  while (!registers.IsEmpty()) {
-    int count_before = registers.Count();
-    const CPURegister& dst0 = registers.PopLowestIndex();
-    const CPURegister& dst1 = registers.PopLowestIndex();
-    const CPURegister& dst2 = registers.PopLowestIndex();
-    const CPURegister& dst3 = registers.PopLowestIndex();
-    int count = count_before - registers.Count();
-    PopHelper(count, size, dst0, dst1, dst2, dst3);
-  }
-
-#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
-  if (lr_mode == kAuthLR && contains_lr) {
-    Autibsp();
-  }
-#endif
-}
-
 void TurboAssembler::Claim(int64_t count, uint64_t unit_size) {
   DCHECK_GE(count, 0);
   uint64_t size = count * unit_size;
@@ -1288,7 +1249,7 @@ void TurboAssembler::Claim(int64_t count, uint64_t unit_size) {
     return;
   }
   DCHECK_EQ(size % 16, 0);
-#if V8_OS_WIN
+#if V8_TARGET_OS_WIN
   while (size > kStackPageSize) {
     Sub(sp, sp, kStackPageSize);
     Str(xzr, MemOperand(sp));
@@ -1310,7 +1271,7 @@ void TurboAssembler::Claim(const Register& count, uint64_t unit_size) {
   }
   AssertPositiveOrZero(count);
 
-#if V8_OS_WIN
+#if V8_TARGET_OS_WIN
   // "Functions that allocate 4k or more worth of stack must ensure that each
   // page prior to the final page is touched in order." Source:
   // https://docs.microsoft.com/en-us/cpp/build/arm64-windows-abi-conventions?view=vs-2019#stack

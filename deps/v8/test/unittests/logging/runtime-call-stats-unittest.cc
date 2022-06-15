@@ -4,9 +4,13 @@
 
 #include "src/logging/runtime-call-stats.h"
 
+#include <atomic>
+
+#include "include/v8-template.h"
 #include "src/api/api-inl.h"
 #include "src/base/atomic-utils.h"
 #include "src/base/platform/time.h"
+#include "src/flags/flags.h"
 #include "src/handles/handles-inl.h"
 #include "src/logging/counters.h"
 #include "src/objects/objects-inl.h"
@@ -19,7 +23,8 @@ namespace internal {
 
 namespace {
 
-static base::TimeTicks runtime_call_stats_test_time_ = base::TimeTicks();
+static std::atomic<base::TimeTicks> runtime_call_stats_test_time_ =
+    base::TimeTicks();
 // Time source used for the RuntimeCallTimer during tests. We cannot rely on
 // the native timer since it's too unpredictable on the build bots.
 static base::TimeTicks RuntimeCallStatsTestNow() {
@@ -45,16 +50,16 @@ class RuntimeCallStatsTest : public TestWithNativeContext {
     TracingFlags::runtime_stats.store(0, std::memory_order_relaxed);
   }
 
-  static void SetUpTestCase() {
-    TestWithIsolate::SetUpTestCase();
+  static void SetUpTestSuite() {
+    TestWithIsolate::SetUpTestSuite();
     // Use a custom time source to precisly emulate system time.
     RuntimeCallTimer::Now = &RuntimeCallStatsTestNow;
   }
 
-  static void TearDownTestCase() {
-    TestWithIsolate::TearDownTestCase();
+  static void TearDownTestSuite() {
+    TestWithIsolate::TearDownTestSuite();
     // Restore the original time source.
-    RuntimeCallTimer::Now = &base::TimeTicks::HighResolutionNow;
+    RuntimeCallTimer::Now = &base::TimeTicks::Now;
   }
 
   RuntimeCallStats* stats() {
@@ -109,10 +114,10 @@ class V8_NODISCARD NativeTimeScope {
  public:
   NativeTimeScope() {
     CHECK_EQ(RuntimeCallTimer::Now, &RuntimeCallStatsTestNow);
-    RuntimeCallTimer::Now = &base::TimeTicks::HighResolutionNow;
+    RuntimeCallTimer::Now = &base::TimeTicks::Now;
   }
   ~NativeTimeScope() {
-    CHECK_EQ(RuntimeCallTimer::Now, &base::TimeTicks::HighResolutionNow);
+    CHECK_EQ(RuntimeCallTimer::Now, &base::TimeTicks::Now);
     RuntimeCallTimer::Now = &RuntimeCallStatsTestNow;
   }
 };
@@ -622,11 +627,14 @@ TEST_F(RuntimeCallStatsTest, ApiGetter) {
 }
 
 TEST_F(RuntimeCallStatsTest, GarbageCollection) {
+  if (FLAG_stress_incremental_marking) return;
   FLAG_expose_gc = true;
   // Disable concurrent GC threads because otherwise they may continue
   // running after this test completes and race with is_runtime_stats_enabled()
   // updates.
   FLAG_single_threaded_gc = true;
+
+  FlagList::EnforceFlagImplications();
   v8::Isolate* isolate = v8_isolate();
   RunJS(
       "let root = [];"

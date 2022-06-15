@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
-#include <vector>
 
 #include "src/common/globals.h"
 #include "src/interpreter/bytecode-operands.h"
@@ -106,7 +105,7 @@ namespace interpreter {
     OperandType::kIdx)                                                         \
   V(LdaGlobalInsideTypeof, ImplicitRegisterUse::kWriteAccumulator,             \
     OperandType::kIdx, OperandType::kIdx)                                      \
-  V(StaGlobal, ImplicitRegisterUse::kReadAccumulator, OperandType::kIdx,       \
+  V(StaGlobal, ImplicitRegisterUse::kReadWriteAccumulator, OperandType::kIdx,  \
     OperandType::kIdx)                                                         \
                                                                                \
   /* Context operations */                                                     \
@@ -131,13 +130,11 @@ namespace interpreter {
     OperandType::kIdx, OperandType::kFlag8)                                    \
                                                                                \
   /* Property loads (LoadIC) operations */                                     \
-  V(LdaNamedProperty, ImplicitRegisterUse::kWriteAccumulator,                  \
+  V(GetNamedProperty, ImplicitRegisterUse::kWriteAccumulator,                  \
     OperandType::kReg, OperandType::kIdx, OperandType::kIdx)                   \
-  V(LdaNamedPropertyNoFeedback, ImplicitRegisterUse::kWriteAccumulator,        \
-    OperandType::kReg, OperandType::kIdx)                                      \
-  V(LdaNamedPropertyFromSuper, ImplicitRegisterUse::kReadWriteAccumulator,     \
+  V(GetNamedPropertyFromSuper, ImplicitRegisterUse::kReadWriteAccumulator,     \
     OperandType::kReg, OperandType::kIdx, OperandType::kIdx)                   \
-  V(LdaKeyedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
+  V(GetKeyedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
     OperandType::kReg, OperandType::kIdx)                                      \
                                                                                \
   /* Operations on module variables */                                         \
@@ -147,17 +144,17 @@ namespace interpreter {
     OperandType::kImm, OperandType::kUImm)                                     \
                                                                                \
   /* Propery stores (StoreIC) operations */                                    \
-  V(StaNamedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
+  V(SetNamedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
     OperandType::kReg, OperandType::kIdx, OperandType::kIdx)                   \
-  V(StaNamedPropertyNoFeedback, ImplicitRegisterUse::kReadWriteAccumulator,    \
-    OperandType::kReg, OperandType::kIdx, OperandType::kFlag8)                 \
-  V(StaNamedOwnProperty, ImplicitRegisterUse::kReadWriteAccumulator,           \
+  V(DefineNamedOwnProperty, ImplicitRegisterUse::kReadWriteAccumulator,        \
     OperandType::kReg, OperandType::kIdx, OperandType::kIdx)                   \
-  V(StaKeyedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
+  V(SetKeyedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
+    OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
+  V(DefineKeyedOwnProperty, ImplicitRegisterUse::kReadWriteAccumulator,        \
     OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
   V(StaInArrayLiteral, ImplicitRegisterUse::kReadWriteAccumulator,             \
     OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
-  V(StaDataPropertyInLiteral, ImplicitRegisterUse::kReadAccumulator,           \
+  V(DefineKeyedOwnPropertyInLiteral, ImplicitRegisterUse::kReadAccumulator,    \
     OperandType::kReg, OperandType::kReg, OperandType::kFlag8,                 \
     OperandType::kIdx)                                                         \
   V(CollectTypeProfile, ImplicitRegisterUse::kReadAccumulator,                 \
@@ -255,8 +252,6 @@ namespace interpreter {
   V(CallUndefinedReceiver2, ImplicitRegisterUse::kWriteAccumulator,            \
     OperandType::kReg, OperandType::kReg, OperandType::kReg,                   \
     OperandType::kIdx)                                                         \
-  V(CallNoFeedback, ImplicitRegisterUse::kWriteAccumulator, OperandType::kReg, \
-    OperandType::kRegList, OperandType::kRegCount)                             \
   V(CallWithSpread, ImplicitRegisterUse::kWriteAccumulator, OperandType::kReg, \
     OperandType::kRegList, OperandType::kRegCount, OperandType::kIdx)          \
   V(CallRuntime, ImplicitRegisterUse::kWriteAccumulator,                       \
@@ -399,7 +394,7 @@ namespace interpreter {
                                                                                \
   /* Complex flow control For..in */                                           \
   V(ForInEnumerate, ImplicitRegisterUse::kWriteAccumulator, OperandType::kReg) \
-  V(ForInPrepare, ImplicitRegisterUse::kReadAccumulator,                       \
+  V(ForInPrepare, ImplicitRegisterUse::kReadWriteAccumulator,                  \
     OperandType::kRegOutTriple, OperandType::kIdx)                             \
   V(ForInContinue, ImplicitRegisterUse::kWriteAccumulator, OperandType::kReg,  \
     OperandType::kReg)                                                         \
@@ -541,6 +536,10 @@ namespace interpreter {
 #define RETURN_BYTECODE_LIST(V) \
   V(Return)                     \
   V(SuspendGenerator)
+
+#define UNCONDITIONAL_THROW_BYTECODE_LIST(V) \
+  V(Throw)                                   \
+  V(ReThrow)
 
 // Enumeration of interpreter bytecodes.
 enum class Bytecode : uint8_t {
@@ -779,7 +778,6 @@ class V8_EXPORT_PRIVATE Bytecodes final : public AllStatic {
            bytecode == Bytecode::kCallUndefinedReceiver0 ||
            bytecode == Bytecode::kCallUndefinedReceiver1 ||
            bytecode == Bytecode::kCallUndefinedReceiver2 ||
-           bytecode == Bytecode::kCallNoFeedback ||
            bytecode == Bytecode::kConstruct ||
            bytecode == Bytecode::kCallWithSpread ||
            bytecode == Bytecode::kConstructWithSpread ||
@@ -793,15 +791,6 @@ class V8_EXPORT_PRIVATE Bytecodes final : public AllStatic {
            bytecode == Bytecode::kInvokeIntrinsic;
   }
 
-  // Returns true if the bytecode is an one-shot bytecode.  One-shot bytecodes
-  // don`t collect feedback and are intended for code that runs only once and
-  // shouldn`t be optimized.
-  static constexpr bool IsOneShotBytecode(Bytecode bytecode) {
-    return bytecode == Bytecode::kCallNoFeedback ||
-           bytecode == Bytecode::kLdaNamedPropertyNoFeedback ||
-           bytecode == Bytecode::kStaNamedPropertyNoFeedback;
-  }
-
   // Returns true if the bytecode is a scaling prefix bytecode.
   static constexpr bool IsPrefixScalingBytecode(Bytecode bytecode) {
     return bytecode == Bytecode::kExtraWide || bytecode == Bytecode::kWide ||
@@ -813,6 +802,13 @@ class V8_EXPORT_PRIVATE Bytecodes final : public AllStatic {
   static constexpr bool Returns(Bytecode bytecode) {
 #define OR_BYTECODE(NAME) || bytecode == Bytecode::k##NAME
     return false RETURN_BYTECODE_LIST(OR_BYTECODE);
+#undef OR_BYTECODE
+  }
+
+  // Returns true if the bytecode unconditionally throws.
+  static constexpr bool UnconditionallyThrows(Bytecode bytecode) {
+#define OR_BYTECODE(NAME) || bytecode == Bytecode::k##NAME
+    return false UNCONDITIONAL_THROW_BYTECODE_LIST(OR_BYTECODE);
 #undef OR_BYTECODE
   }
 
@@ -920,7 +916,6 @@ class V8_EXPORT_PRIVATE Bytecodes final : public AllStatic {
       case Bytecode::kCallJSRuntime:
         return ConvertReceiverMode::kNullOrUndefined;
       case Bytecode::kCallAnyReceiver:
-      case Bytecode::kCallNoFeedback:
       case Bytecode::kConstruct:
       case Bytecode::kCallWithSpread:
       case Bytecode::kConstructWithSpread:

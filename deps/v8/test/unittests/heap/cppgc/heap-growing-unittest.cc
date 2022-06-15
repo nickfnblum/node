@@ -37,6 +37,9 @@ class FakeGarbageCollector : public GarbageCollector {
   }
 
   size_t epoch() const override { return callcount_; }
+  const EmbedderStackState* override_stack_state() const override {
+    return nullptr;
+  }
 
  private:
   StatsCollector* stats_collector_;
@@ -50,6 +53,8 @@ class MockGarbageCollector : public GarbageCollector {
   MOCK_METHOD(void, StartIncrementalGarbageCollection,
               (GarbageCollector::Config), (override));
   MOCK_METHOD(size_t, epoch, (), (const, override));
+  MOCK_METHOD(const EmbedderStackState*, override_stack_state, (),
+              (const, override));
 };
 
 void FakeAllocate(StatsCollector* stats_collector, size_t bytes) {
@@ -57,11 +62,12 @@ void FakeAllocate(StatsCollector* stats_collector, size_t bytes) {
   stats_collector->NotifySafePointForConservativeCollection();
 }
 
+static constexpr Platform* kNoPlatform = nullptr;
+
 }  // namespace
 
 TEST(HeapGrowingTest, ConservativeGCInvoked) {
-  StatsCollector stats_collector(nullptr /* metric_recorder */,
-                                 nullptr /* platform */);
+  StatsCollector stats_collector(kNoPlatform);
   MockGarbageCollector gc;
   cppgc::Heap::ResourceConstraints constraints;
   // Force GC at the first update.
@@ -77,8 +83,7 @@ TEST(HeapGrowingTest, ConservativeGCInvoked) {
 }
 
 TEST(HeapGrowingTest, InitialHeapSize) {
-  StatsCollector stats_collector(nullptr /* metric_recorder */,
-                                 nullptr /* platform */);
+  StatsCollector stats_collector(kNoPlatform);
   MockGarbageCollector gc;
   cppgc::Heap::ResourceConstraints constraints;
   // Use larger size to avoid running into small heap optimizations.
@@ -98,8 +103,7 @@ TEST(HeapGrowingTest, InitialHeapSize) {
 TEST(HeapGrowingTest, ConstantGrowingFactor) {
   // Use larger size to avoid running into small heap optimizations.
   constexpr size_t kObjectSize = 10 * HeapGrowing::kMinLimitIncrease;
-  StatsCollector stats_collector(nullptr /* metric_recorder */,
-                                 nullptr /* platform */);
+  StatsCollector stats_collector(kNoPlatform);
   FakeGarbageCollector gc(&stats_collector);
   cppgc::Heap::ResourceConstraints constraints;
   // Force GC at the first update.
@@ -117,8 +121,7 @@ TEST(HeapGrowingTest, ConstantGrowingFactor) {
 TEST(HeapGrowingTest, SmallHeapGrowing) {
   // Larger constant to avoid running into special handling for smaller heaps.
   constexpr size_t kLargeAllocation = 100 * kMB;
-  StatsCollector stats_collector(nullptr /* metric_recorder */,
-                                 nullptr /* platform */);
+  StatsCollector stats_collector(kNoPlatform);
   FakeGarbageCollector gc(&stats_collector);
   cppgc::Heap::ResourceConstraints constraints;
   // Force GC at the first update.
@@ -134,8 +137,7 @@ TEST(HeapGrowingTest, SmallHeapGrowing) {
 }
 
 TEST(HeapGrowingTest, IncrementalGCStarted) {
-  StatsCollector stats_collector(nullptr /* metric_recorder */,
-                                 nullptr /* platform */);
+  StatsCollector stats_collector(kNoPlatform);
   MockGarbageCollector gc;
   cppgc::Heap::ResourceConstraints constraints;
   HeapGrowing growing(&gc, &stats_collector, constraints,
@@ -152,8 +154,7 @@ TEST(HeapGrowingTest, IncrementalGCStarted) {
 }
 
 TEST(HeapGrowingTest, IncrementalGCFinalized) {
-  StatsCollector stats_collector(nullptr /* metric_recorder */,
-                                 nullptr /* platform */);
+  StatsCollector stats_collector(kNoPlatform);
   MockGarbageCollector gc;
   cppgc::Heap::ResourceConstraints constraints;
   HeapGrowing growing(&gc, &stats_collector, constraints,

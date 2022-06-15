@@ -25,9 +25,6 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# for py2/py3 compatibility
-from __future__ import print_function
-
 from os.path import exists
 from os.path import isdir
 from os.path import join
@@ -95,6 +92,18 @@ def GuessOS():
     return 'aix'
   else:
     return None
+
+
+# Check if Vector Enhancement Facility 1 is available on the
+# host S390 machine. This facility is required for supporting Simd on V8.
+def IsS390SimdSupported():
+  import subprocess
+  cpuinfo = subprocess.check_output("cat /proc/cpuinfo", shell=True)
+  cpuinfo_list = cpuinfo.strip().decode("utf-8").splitlines()
+  facilities = "".join(x for x in cpuinfo_list if x.startswith("facilities"))
+  facilities_list = facilities.split(" ")
+  # Having bit 135 set indicates VEF1 is available.
+  return "135" in facilities_list
 
 
 # Returns power processor version, taking compatibility mode into account.
@@ -200,7 +209,7 @@ class FrozenDict(dict):
 
 def Freeze(obj):
   if isinstance(obj, dict):
-    return FrozenDict((k, Freeze(v)) for k, v in obj.iteritems())
+    return FrozenDict((k, Freeze(v)) for k, v in list(obj.items()))
   elif isinstance(obj, set):
     return frozenset(obj)
   elif isinstance(obj, list):

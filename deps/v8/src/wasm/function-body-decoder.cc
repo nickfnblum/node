@@ -20,6 +20,17 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
+namespace value_type_reader {
+HeapType consume_heap_type(Decoder* decoder, const WasmModule* module,
+                           const WasmFeatures& enabled) {
+  uint32_t length;
+  HeapType result = value_type_reader::read_heap_type<Decoder::kFullValidation>(
+      decoder, decoder->pc(), &length, module, enabled);
+  decoder->consume_bytes(length, "heap type");
+  return result;
+}
+}  // namespace value_type_reader
+
 bool DecodeLocalDecls(const WasmFeatures& enabled, BodyLocalDecls* decls,
                       const WasmModule* module, const byte* start,
                       const byte* end) {
@@ -63,12 +74,13 @@ DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
 }
 
 unsigned OpcodeLength(const byte* pc, const byte* end) {
-  WasmFeatures no_features = WasmFeatures::None();
+  WasmFeatures unused_detected_features;
   Zone* no_zone = nullptr;
   WasmModule* no_module = nullptr;
   FunctionSig* no_sig = nullptr;
-  WasmDecoder<Decoder::kNoValidation> decoder(no_zone, no_module, no_features,
-                                              &no_features, no_sig, pc, end, 0);
+  WasmDecoder<Decoder::kNoValidation> decoder(
+      no_zone, no_module, WasmFeatures::All(), &unused_detected_features,
+      no_sig, pc, end, 0);
   return WasmDecoder<Decoder::kNoValidation>::OpcodeLength(&decoder, pc);
 }
 
@@ -94,8 +106,8 @@ void PrintRawWasmCode(const byte* start, const byte* end) {
 namespace {
 const char* RawOpcodeName(WasmOpcode opcode) {
   switch (opcode) {
-#define DECLARE_NAME_CASE(name, opcode, sig) \
-  case kExpr##name:                          \
+#define DECLARE_NAME_CASE(name, ...) \
+  case kExpr##name:                  \
     return "kExpr" #name;
     FOREACH_OPCODE(DECLARE_NAME_CASE)
 #undef DECLARE_NAME_CASE
@@ -191,7 +203,7 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
     }
     if (line_numbers) line_numbers->push_back(i.position());
     if (opcode == kExprElse || opcode == kExprCatch ||
-        opcode == kExprCatchAll || opcode == kExprUnwind) {
+        opcode == kExprCatchAll) {
       control_depth--;
     }
 
@@ -241,7 +253,6 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
       case kExprElse:
       case kExprCatch:
       case kExprCatchAll:
-      case kExprUnwind:
         os << " @" << i.pc_offset();
         control_depth++;
         break;
@@ -253,10 +264,9 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
         BlockTypeImmediate<Decoder::kNoValidation> imm(WasmFeatures::All(), &i,
                                                        i.pc() + 1, module);
         os << " @" << i.pc_offset();
-        if (decoder.Complete(imm)) {
-          for (uint32_t i = 0; i < imm.out_arity(); i++) {
-            os << " " << imm.out_type(i).name();
-          }
+        CHECK(decoder.Validate(i.pc() + 1, imm));
+        for (uint32_t j = 0; j < imm.out_arity(); j++) {
+          os << " " << imm.out_type(j).name();
         }
         control_depth++;
         break;
@@ -281,20 +291,17 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
         break;
       }
       case kExprCallIndirect: {
-        CallIndirectImmediate<Decoder::kNoValidation> imm(WasmFeatures::All(),
-                                                          &i, i.pc() + 1);
-        os << " sig #" << imm.sig_index;
-        if (decoder.Complete(imm)) {
-          os << ": " << *imm.sig;
-        }
+        CallIndirectImmediate<Decoder::kNoValidation> imm(&i, i.pc() + 1);
+        os << " sig #" << imm.sig_imm.index;
+        CHECK(decoder.Validate(i.pc() + 1, imm));
+        os << ": " << *imm.sig;
         break;
       }
       case kExprCallFunction: {
         CallFunctionImmediate<Decoder::kNoValidation> imm(&i, i.pc() + 1);
         os << " function #" << imm.index;
-        if (decoder.Complete(imm)) {
-          os << ": " << *imm.sig;
-        }
+        CHECK(decoder.Validate(i.pc() + 1, imm));
+        os << ": " << *imm.sig;
         break;
       }
       default:
@@ -304,6 +311,7 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
     ++line_nr;
   }
   DCHECK(!line_numbers || line_numbers->size() == static_cast<size_t>(line_nr));
+  USE(line_nr);
 
   return decoder.ok();
 }

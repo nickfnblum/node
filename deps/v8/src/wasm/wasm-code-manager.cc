@@ -4,13 +4,17 @@
 
 #include "src/wasm/wasm-code-manager.h"
 
+#include <algorithm>
 #include <iomanip>
+#include <numeric>
 
+#include "src/base/atomicops.h"
 #include "src/base/build_config.h"
 #include "src/base/iterator.h"
 #include "src/base/macros.h"
 #include "src/base/platform/platform.h"
 #include "src/base/small-vector.h"
+#include "src/base/vector.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/macro-assembler-inl.h"
 #include "src/codegen/macro-assembler.h"
@@ -19,9 +23,8 @@
 #include "src/logging/counters.h"
 #include "src/logging/log.h"
 #include "src/objects/objects-inl.h"
-#include "src/snapshot/embedded/embedded-data.h"
+#include "src/snapshot/embedded/embedded-data-inl.h"
 #include "src/utils/ostreams.h"
-#include "src/utils/vector.h"
 #include "src/wasm/code-space-access.h"
 #include "src/wasm/compilation-environment.h"
 #include "src/wasm/function-compiler.h"
@@ -51,10 +54,6 @@ namespace internal {
 namespace wasm {
 
 using trap_handler::ProtectedInstructionData;
-
-#if defined(V8_OS_MACOSX) && defined(V8_HOST_ARCH_ARM64)
-thread_local int CodeSpaceWriteScope::code_space_write_nesting_level_ = 0;
-#endif
 
 base::AddressRegion DisjointAllocationPool::Merge(
     base::AddressRegion new_region) {
@@ -177,7 +176,7 @@ int WasmCode::code_comments_size() const {
 }
 
 std::unique_ptr<const byte[]> WasmCode::ConcatenateBytes(
-    std::initializer_list<Vector<const byte>> vectors) {
+    std::initializer_list<base::Vector<const byte>> vectors) {
   size_t total_size = 0;
   for (auto& vec : vectors) total_size += vec.size();
   // Use default-initialization (== no initialization).
@@ -185,7 +184,7 @@ std::unique_ptr<const byte[]> WasmCode::ConcatenateBytes(
   byte* ptr = result.get();
   for (auto& vec : vectors) {
     if (vec.empty()) continue;  // Avoid nullptr in {memcpy}.
-    base::Memcpy(ptr, vec.begin(), vec.size());
+    memcpy(ptr, vec.begin(), vec.size());
     ptr += vec.size();
   }
   return result;
@@ -193,7 +192,7 @@ std::unique_ptr<const byte[]> WasmCode::ConcatenateBytes(
 
 void WasmCode::RegisterTrapHandlerData() {
   DCHECK(!has_trap_handler_index());
-  if (kind() != WasmCode::kFunction) return;
+  if (kind() != WasmCode::kWasmFunction) return;
   if (protected_instructions_size_ == 0) return;
 
   Address base = instruction_start();
@@ -219,6 +218,42 @@ bool WasmCode::ShouldBeLogged(Isolate* isolate) {
          isolate->is_profiling();
 }
 
+std::string WasmCode::DebugName() const {
+  if (IsAnonymous()) {
+    return "anonymous function";
+  }
+
+  ModuleWireBytes wire_bytes(native_module()->wire_bytes());
+  const WasmModule* module = native_module()->module();
+  WireBytesRef name_ref =
+      module->lazily_generated_names.LookupFunctionName(wire_bytes, index());
+  WasmName name = wire_bytes.GetNameOrNull(name_ref);
+  std::string name_buffer;
+  if (kind() == kWasmToJsWrapper) {
+    name_buffer = "wasm-to-js:";
+    size_t prefix_len = name_buffer.size();
+    constexpr size_t kMaxSigLength = 128;
+    name_buffer.resize(prefix_len + kMaxSigLength);
+    const FunctionSig* sig = module->functions[index()].sig;
+    size_t sig_length = PrintSignature(
+        base::VectorOf(&name_buffer[prefix_len], kMaxSigLength), sig);
+    name_buffer.resize(prefix_len + sig_length);
+    // If the import has a name, also append that (separated by "-").
+    if (!name.empty()) {
+      name_buffer += '-';
+      name_buffer.append(name.begin(), name.size());
+    }
+  } else if (name.empty()) {
+    name_buffer.resize(32);
+    name_buffer.resize(
+        SNPrintF(base::VectorOf(&name_buffer.front(), name_buffer.size()),
+                 "wasm-function[%d]", index()));
+  } else {
+    name_buffer.append(name.begin(), name.end());
+  }
+  return name_buffer;
+}
+
 void WasmCode::LogCode(Isolate* isolate, const char* source_url,
                        int script_id) const {
   DCHECK(ShouldBeLogged(isolate));
@@ -226,9 +261,8 @@ void WasmCode::LogCode(Isolate* isolate, const char* source_url,
 
   ModuleWireBytes wire_bytes(native_module_->wire_bytes());
   const WasmModule* module = native_module_->module();
-  WireBytesRef name_ref =
-      module->lazily_generated_names.LookupFunctionName(wire_bytes, index());
-  WasmName name = wire_bytes.GetNameOrNull(name_ref);
+  std::string fn_name = DebugName();
+  WasmName name = base::VectorOf(fn_name);
 
   const WasmDebugSymbols& debug_symbols = module->debug_symbols;
   auto load_wasm_source_map = isolate->wasm_load_source_map_callback();
@@ -246,44 +280,28 @@ void WasmCode::LogCode(Isolate* isolate, const char* source_url,
         std::make_unique<WasmModuleSourceMap>(v8_isolate, source_map_str));
   }
 
-  std::string name_buffer;
-  if (kind() == kWasmToJsWrapper) {
-    name_buffer = "wasm-to-js:";
-    size_t prefix_len = name_buffer.size();
-    constexpr size_t kMaxSigLength = 128;
-    name_buffer.resize(prefix_len + kMaxSigLength);
-    const FunctionSig* sig = module->functions[index_].sig;
-    size_t sig_length =
-        PrintSignature(VectorOf(&name_buffer[prefix_len], kMaxSigLength), sig);
-    name_buffer.resize(prefix_len + sig_length);
-    // If the import has a name, also append that (separated by "-").
-    if (!name.empty()) {
-      name_buffer += '-';
-      name_buffer.append(name.begin(), name.size());
-    }
-    name = VectorOf(name_buffer);
-  } else if (name.empty()) {
-    name_buffer.resize(32);
-    name_buffer.resize(
-        SNPrintF(VectorOf(&name_buffer.front(), name_buffer.size()),
-                 "wasm-function[%d]", index()));
-    name = VectorOf(name_buffer);
+  // Record source positions before adding code, otherwise when code is added,
+  // there are no source positions to associate with the added code.
+  if (!source_positions().empty()) {
+    LOG_CODE_EVENT(isolate, WasmCodeLinePosInfoRecordEvent(instruction_start(),
+                                                           source_positions()));
   }
-  // TODO(clemensb): Remove this #if once this compilation unit is excluded in
-  // no-wasm builds.
-#if V8_ENABLE_WEBASSEMBLY
+
   int code_offset = module->functions[index_].code.offset();
   PROFILE(isolate, CodeCreateEvent(CodeEventListener::FUNCTION_TAG, this, name,
                                    source_url, code_offset, script_id));
-#endif  // V8_ENABLE_WEBASSEMBLY
-
-  if (!source_positions().empty()) {
-    LOG_CODE_EVENT(isolate, CodeLinePosInfoRecordEvent(instruction_start(),
-                                                       source_positions()));
-  }
 }
 
 void WasmCode::Validate() const {
+  // The packing strategy for {tagged_parameter_slots} only works if both the
+  // max number of parameters and their max combined stack slot usage fits into
+  // their respective half of the result value.
+  STATIC_ASSERT(wasm::kV8MaxWasmFunctionParams <
+                std::numeric_limits<uint16_t>::max());
+  static constexpr int kMaxSlotsPerParam = 4;  // S128 on 32-bit platforms.
+  STATIC_ASSERT(wasm::kV8MaxWasmFunctionParams * kMaxSlotsPerParam <
+                std::numeric_limits<uint16_t>::max());
+
 #ifdef DEBUG
   // Scope for foreign WasmCode pointers.
   WasmCodeRefScope code_ref_scope;
@@ -328,15 +346,16 @@ void WasmCode::Validate() const {
 #endif
 }
 
-void WasmCode::MaybePrint(const char* name) const {
+void WasmCode::MaybePrint() const {
   // Determines whether flags want this code to be printed.
   bool function_index_matches =
       (!IsAnonymous() &&
        FLAG_print_wasm_code_function_index == static_cast<int>(index()));
-  if (FLAG_print_code ||
-      (kind() == kFunction ? (FLAG_print_wasm_code || function_index_matches)
-                           : FLAG_print_wasm_stub_code)) {
-    Print(name);
+  if (FLAG_print_code || (kind() == kWasmFunction
+                              ? (FLAG_print_wasm_code || function_index_matches)
+                              : FLAG_print_wasm_stub_code)) {
+    std::string name = DebugName();
+    Print(name.c_str());
   }
 }
 
@@ -358,12 +377,17 @@ void WasmCode::Disassemble(const char* name, std::ostream& os,
   if (name) os << "name: " << name << "\n";
   if (!IsAnonymous()) os << "index: " << index() << "\n";
   os << "kind: " << GetWasmCodeKindAsString(kind()) << "\n";
-  os << "compiler: " << (is_liftoff() ? "Liftoff" : "TurboFan") << "\n";
+  if (kind() == kWasmFunction) {
+    DCHECK(is_liftoff() || tier() == ExecutionTier::kTurbofan);
+    const char* compiler =
+        is_liftoff() ? (for_debugging() ? "Liftoff (debug)" : "Liftoff")
+                     : "TurboFan";
+    os << "compiler: " << compiler << "\n";
+  }
   size_t padding = instructions().size() - unpadded_binary_size_;
   os << "Body (size = " << instructions().size() << " = "
      << unpadded_binary_size_ << " + " << padding << " padding)\n";
 
-#ifdef ENABLE_DISASSEMBLER
   int instruction_size = unpadded_binary_size_;
   if (constant_pool_offset_ < instruction_size) {
     instruction_size = constant_pool_offset_;
@@ -375,8 +399,10 @@ void WasmCode::Disassemble(const char* name, std::ostream& os,
     instruction_size = handler_table_offset_;
   }
   DCHECK_LT(0, instruction_size);
+
+#ifdef ENABLE_DISASSEMBLER
   os << "Instructions (size = " << instruction_size << ")\n";
-  Disassembler::Decode(nullptr, &os, instructions().begin(),
+  Disassembler::Decode(nullptr, os, instructions().begin(),
                        instructions().begin() + instruction_size,
                        CodeReference(this), current_pc);
   os << "\n";
@@ -411,27 +437,7 @@ void WasmCode::Disassemble(const char* name, std::ostream& os,
 
   if (safepoint_table_offset_ > 0) {
     SafepointTable table(this);
-    os << "Safepoints (size = " << table.size() << ")\n";
-    for (uint32_t i = 0; i < table.length(); i++) {
-      uintptr_t pc_offset = table.GetPcOffset(i);
-      os << reinterpret_cast<const void*>(instruction_start() + pc_offset);
-      os << std::setw(6) << std::hex << pc_offset << "  " << std::dec;
-      table.PrintEntry(i, os);
-      os << " (sp -> fp)";
-      SafepointEntry entry = table.GetEntry(i);
-      if (entry.trampoline_pc() != SafepointEntry::kNoTrampolinePC) {
-        os << " trampoline: " << std::hex << entry.trampoline_pc() << std::dec;
-      }
-      if (entry.has_register_bits()) {
-        os << " registers: ";
-        uint32_t register_bits = entry.register_bits();
-        int bits = 32 - base::bits::CountLeadingZeros32(register_bits);
-        for (int i = bits - 1; i >= 0; --i) {
-          os << ((register_bits >> i) & 1);
-        }
-      }
-      os << "\n";
-    }
+    table.Print(os);
     os << "\n";
   }
 
@@ -441,12 +447,16 @@ void WasmCode::Disassemble(const char* name, std::ostream& os,
     it.rinfo()->Print(nullptr, os);
   }
   os << "\n";
-#endif  // ENABLE_DISASSEMBLER
+#else   // !ENABLE_DISASSEMBLER
+  os << "Instructions (size = " << instruction_size << ", "
+     << static_cast<void*>(instructions().begin()) << "-"
+     << static_cast<void*>(instructions().begin() + instruction_size) << ")\n";
+#endif  // !ENABLE_DISASSEMBLER
 }
 
 const char* GetWasmCodeKindAsString(WasmCode::Kind kind) {
   switch (kind) {
-    case WasmCode::kFunction:
+    case WasmCode::kWasmFunction:
       return "wasm function";
     case WasmCode::kWasmToCapiWrapper:
       return "wasm-to-capi";
@@ -465,7 +475,7 @@ WasmCode::~WasmCode() {
 }
 
 V8_WARN_UNUSED_RESULT bool WasmCode::DecRefOnPotentiallyDeadCode() {
-  if (native_module_->engine()->AddPotentiallyDeadCode(this)) {
+  if (GetWasmEngine()->AddPotentiallyDeadCode(this)) {
     // The code just became potentially dead. The ref count we wanted to
     // decrement is now transferred to the set of potentially dead code, and
     // will be decremented when the next GC is run.
@@ -477,20 +487,18 @@ V8_WARN_UNUSED_RESULT bool WasmCode::DecRefOnPotentiallyDeadCode() {
 }
 
 // static
-void WasmCode::DecrementRefCount(Vector<WasmCode* const> code_vec) {
+void WasmCode::DecrementRefCount(base::Vector<WasmCode* const> code_vec) {
   // Decrement the ref counter of all given code objects. Keep the ones whose
   // ref count drops to zero.
   WasmEngine::DeadCodeMap dead_code;
-  WasmEngine* engine = nullptr;
   for (WasmCode* code : code_vec) {
     if (!code->DecRef()) continue;  // Remaining references.
     dead_code[code->native_module()].push_back(code);
-    if (!engine) engine = code->native_module()->engine();
-    DCHECK_EQ(engine, code->native_module()->engine());
   }
 
-  DCHECK_EQ(dead_code.empty(), engine == nullptr);
-  if (engine) engine->FreeDeadCode(dead_code);
+  if (dead_code.empty()) return;
+
+  GetWasmEngine()->FreeDeadCode(dead_code);
 }
 
 int WasmCode::GetSourcePositionBefore(int offset) {
@@ -506,16 +514,18 @@ int WasmCode::GetSourcePositionBefore(int offset) {
 // static
 constexpr size_t WasmCodeAllocator::kMaxCodeSpaceSize;
 
-WasmCodeAllocator::WasmCodeAllocator(WasmCodeManager* code_manager,
-                                     std::shared_ptr<Counters> async_counters)
-    : code_manager_(code_manager),
+WasmCodeAllocator::WasmCodeAllocator(std::shared_ptr<Counters> async_counters)
+    : protect_code_memory_(
+          !V8_HAS_PTHREAD_JIT_WRITE_PROTECT &&
+          FLAG_wasm_write_protect_code_memory &&
+          !GetWasmCodeManager()->MemoryProtectionKeysEnabled()),
       async_counters_(std::move(async_counters)) {
   owned_code_space_.reserve(4);
 }
 
 WasmCodeAllocator::~WasmCodeAllocator() {
-  code_manager_->FreeNativeModule(VectorOf(owned_code_space_),
-                                  committed_code_space());
+  GetWasmCodeManager()->FreeNativeModule(base::VectorOf(owned_code_space_),
+                                         committed_code_space());
 }
 
 void WasmCodeAllocator::Init(VirtualMemory code_space) {
@@ -594,35 +604,113 @@ size_t OverheadPerCodeSpace(uint32_t num_declared_functions) {
   return overhead;
 }
 
+// Returns an estimate how much code space should be reserved.
 size_t ReservationSize(size_t code_size_estimate, int num_declared_functions,
                        size_t total_reserved) {
   size_t overhead = OverheadPerCodeSpace(num_declared_functions);
 
-  // Reserve a power of two at least as big as any of
+  // Reserve the maximum of
   //   a) needed size + overhead (this is the minimum needed)
   //   b) 2 * overhead (to not waste too much space by overhead)
   //   c) 1/4 of current total reservation size (to grow exponentially)
-  size_t reserve_size = base::bits::RoundUpToPowerOfTwo(
+  size_t minimum_size = 2 * overhead;
+  size_t suggested_size =
       std::max(std::max(RoundUp<kCodeAlignment>(code_size_estimate) + overhead,
-                        2 * overhead),
-               total_reserved / 4));
+                        minimum_size),
+               total_reserved / 4);
+
+  if (V8_UNLIKELY(minimum_size > WasmCodeAllocator::kMaxCodeSpaceSize)) {
+    constexpr auto format = base::StaticCharVector(
+        "wasm code reservation: required minimum (%zu) is bigger than "
+        "supported maximum (%zu)");
+    constexpr int kMaxMessageLength =
+        format.size() - 6 + 2 * std::numeric_limits<size_t>::digits10;
+    base::EmbeddedVector<char, kMaxMessageLength + 1> message;
+    SNPrintF(message, format.begin(), minimum_size,
+             WasmCodeAllocator::kMaxCodeSpaceSize);
+    V8::FatalProcessOutOfMemory(nullptr, message.begin());
+    UNREACHABLE();
+  }
 
   // Limit by the maximum supported code space size.
-  return std::min(WasmCodeAllocator::kMaxCodeSpaceSize, reserve_size);
+  size_t reserve_size =
+      std::min(WasmCodeAllocator::kMaxCodeSpaceSize, suggested_size);
+
+  return reserve_size;
 }
+
+#ifdef DEBUG
+// Check postconditions when returning from this method:
+// 1) {region} must be fully contained in {writable_memory_};
+// 2) {writable_memory_} must be a maximally merged ordered set of disjoint
+//    non-empty regions.
+class CheckWritableMemoryRegions {
+ public:
+  CheckWritableMemoryRegions(
+      std::set<base::AddressRegion, base::AddressRegion::StartAddressLess>&
+          writable_memory,
+      base::AddressRegion new_region, size_t& new_writable_memory)
+      : writable_memory_(writable_memory),
+        new_region_(new_region),
+        new_writable_memory_(new_writable_memory),
+        old_writable_size_(std::accumulate(
+            writable_memory_.begin(), writable_memory_.end(), size_t{0},
+            [](size_t old, base::AddressRegion region) {
+              return old + region.size();
+            })) {}
+
+  ~CheckWritableMemoryRegions() {
+    // {new_region} must be contained in {writable_memory_}.
+    DCHECK(std::any_of(
+        writable_memory_.begin(), writable_memory_.end(),
+        [this](auto region) { return region.contains(new_region_); }));
+
+    // The new total size of writable memory must have increased by
+    // {new_writable_memory}.
+    size_t total_writable_size = std::accumulate(
+        writable_memory_.begin(), writable_memory_.end(), size_t{0},
+        [](size_t old, auto region) { return old + region.size(); });
+    DCHECK_EQ(old_writable_size_ + new_writable_memory_, total_writable_size);
+
+    // There are no empty regions.
+    DCHECK(std::none_of(writable_memory_.begin(), writable_memory_.end(),
+                        [](auto region) { return region.is_empty(); }));
+
+    // Regions are sorted and disjoint. (std::accumulate has nodiscard on msvc
+    // so USE is required to prevent build failures in debug builds).
+    USE(std::accumulate(writable_memory_.begin(), writable_memory_.end(),
+                        Address{0}, [](Address previous_end, auto region) {
+                          DCHECK_LT(previous_end, region.begin());
+                          return region.end();
+                        }));
+  }
+
+ private:
+  const std::set<base::AddressRegion, base::AddressRegion::StartAddressLess>&
+      writable_memory_;
+  const base::AddressRegion new_region_;
+  const size_t& new_writable_memory_;
+  const size_t old_writable_size_;
+};
+#else   // !DEBUG
+class CheckWritableMemoryRegions {
+ public:
+  template <typename... Args>
+  explicit CheckWritableMemoryRegions(Args...) {}
+};
+#endif  // !DEBUG
 
 }  // namespace
 
-Vector<byte> WasmCodeAllocator::AllocateForCode(NativeModule* native_module,
-                                                size_t size) {
+base::Vector<byte> WasmCodeAllocator::AllocateForCode(
+    NativeModule* native_module, size_t size) {
   return AllocateForCodeInRegion(native_module, size, kUnrestrictedRegion);
 }
 
-Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
+base::Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
     NativeModule* native_module, size_t size, base::AddressRegion region) {
-  DCHECK_EQ(code_manager_, native_module->engine()->code_manager());
   DCHECK_LT(0, size);
-  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
+  auto* code_manager = GetWasmCodeManager();
   size = RoundUp<kCodeAlignment>(size);
   base::AddressRegion code_space =
       free_code_space_.AllocateInRegion(size, region);
@@ -640,14 +728,20 @@ Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
     size_t reserve_size = ReservationSize(
         size, native_module->module()->num_declared_functions, total_reserved);
     VirtualMemory new_mem =
-        code_manager_->TryAllocate(reserve_size, reinterpret_cast<void*>(hint));
+        code_manager->TryAllocate(reserve_size, reinterpret_cast<void*>(hint));
     if (!new_mem.IsReserved()) {
-      V8::FatalProcessOutOfMemory(nullptr, "wasm code reservation");
+      constexpr auto format = base::StaticCharVector(
+          "Cannot allocate more code space (%zu bytes, currently %zu)");
+      constexpr int kMaxMessageLength =
+          format.size() - 6 + 2 * std::numeric_limits<size_t>::digits10;
+      base::EmbeddedVector<char, kMaxMessageLength + 1> message;
+      SNPrintF(message, format.begin(), total_reserved, reserve_size);
+      V8::FatalProcessOutOfMemory(nullptr, message.begin());
       UNREACHABLE();
     }
 
     base::AddressRegion new_region = new_mem.region();
-    code_manager_->AssignRange(new_region, native_module);
+    code_manager->AssignRange(new_region, native_module);
     free_code_space_.Merge(new_region);
     owned_code_space_.emplace_back(std::move(new_mem));
     native_module->AddCodeSpaceLocked(new_region);
@@ -657,8 +751,12 @@ Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
     async_counters_->wasm_module_num_code_spaces()->AddSample(
         static_cast<int>(owned_code_space_.size()));
   }
-  const Address commit_page_size = page_allocator->CommitPageSize();
+  const Address commit_page_size = CommitPageSize();
   Address commit_start = RoundUp(code_space.begin(), commit_page_size);
+  if (commit_start != code_space.begin()) {
+    MakeWritable({commit_start - commit_page_size, commit_page_size});
+  }
+
   Address commit_end = RoundUp(code_space.end(), commit_page_size);
   // {commit_start} will be either code_space.start or the start of the next
   // page. {commit_end} will be the start of the page after the one in which
@@ -671,11 +769,16 @@ Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
   if (commit_start < commit_end) {
     for (base::AddressRegion split_range : SplitRangeByReservationsIfNeeded(
              {commit_start, commit_end - commit_start}, owned_code_space_)) {
-      code_manager_->Commit(split_range);
+      code_manager->Commit(split_range);
     }
     committed_code_space_.fetch_add(commit_end - commit_start);
     // Committed code cannot grow bigger than maximum code space size.
     DCHECK_LE(committed_code_space_.load(), FLAG_wasm_max_code_space * MB);
+    if (protect_code_memory_) {
+      DCHECK_LT(0, writers_count_);
+      InsertIntoWritableRegions({commit_start, commit_end - commit_start},
+                                false);
+    }
   }
   DCHECK(IsAligned(code_space.begin(), kCodeAlignment));
   allocated_code_space_.Merge(code_space);
@@ -686,108 +789,57 @@ Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
   return {reinterpret_cast<byte*>(code_space.begin()), code_space.size()};
 }
 
-// TODO(dlehmann): Do not return the success as a bool, but instead fail hard.
-// That is, pull the CHECK from {NativeModuleModificationScope} in here and
-// return void.
-// TODO(dlehmann): Ensure {SetWritable(true)} is always paired up with a
-// {SetWritable(false)}, such that eventually the code space is write protected.
+// TODO(dlehmann): Ensure that {AddWriter()} is always paired up with a
+// {RemoveWriter}, such that eventually the code space is write protected.
 // One solution is to make the API foolproof by hiding {SetWritable()} and
-// allowing change of permissions only through {NativeModuleModificationScope}.
+// allowing change of permissions only through {CodeSpaceWriteScope}.
 // TODO(dlehmann): Add tests that ensure the code space is eventually write-
 // protected.
-bool WasmCodeAllocator::SetWritable(bool writable) {
-  // Invariant: `this.writers_count_ > 0` iff `code space has W permission`.
-  // TODO(dlehmann): This is currently not fulfilled before the first call
-  // to SetWritable(false), because initial permissions are RWX.
-  // Fix by setting initial permissions to RX and adding writable permission
-  // where appropriate. See also {WasmCodeManager::Commit()}.
-  if (writable) {
-    if (++writers_count_ > 1) return true;
-  } else {
-    DCHECK_GT(writers_count_, 0);
-    if (--writers_count_ > 0) return true;
-  }
-  writable = writers_count_ > 0;
-  TRACE_HEAP("Setting module %p as writable: %d.\n", this, writable);
-
-  if (FLAG_wasm_write_protect_code_memory) {
-    v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
-
-    // Due to concurrent compilation and execution, we always need the execute
-    // permission, however during codegen we additionally need to write.
-    // Hence this does not actually achieve write-xor-execute, but merely
-    // "always-execute" with "no-write-eventually".
-    PageAllocator::Permission permission =
-        writable ? PageAllocator::kReadWriteExecute
-                 : PageAllocator::kReadExecute;
-#if V8_OS_WIN
-    // On windows, we need to switch permissions per separate virtual memory
-    // reservation.
-    // For now, in that case, we commit at reserved memory granularity.
-    // Technically, that may be a waste, because we may reserve more than we
-    // use. On 32-bit though, the scarce resource is the address space -
-    // committed or not.
-    for (auto& vmem : owned_code_space_) {
-      if (!SetPermissions(page_allocator, vmem.address(), vmem.size(),
-                          permission)) {
-        return false;
-      }
-      TRACE_HEAP("Set %p:%p to writable:%d\n", vmem.address(), vmem.end(),
-                 writable);
-    }
-#else   // V8_OS_WIN
-    size_t commit_page_size = page_allocator->CommitPageSize();
-    for (auto& region : allocated_code_space_.regions()) {
-      // allocated_code_space_ is fine-grained, so we need to
-      // page-align it.
-      size_t region_size = RoundUp(region.size(), commit_page_size);
-      if (!SetPermissions(page_allocator, region.begin(), region_size,
-                          permission)) {
-        return false;
-      }
-      TRACE_HEAP("Set 0x%" PRIxPTR ":0x%" PRIxPTR " to writable:%d\n",
-                 region.begin(), region.end(), writable);
-    }
-#endif  // V8_OS_WIN
-  }
-  return true;
+void WasmCodeAllocator::AddWriter() {
+  DCHECK(protect_code_memory_);
+  ++writers_count_;
 }
 
-bool WasmCodeAllocator::SetThreadWritable(bool writable) {
-  static thread_local int writable_nesting_level = 0;
-  if (writable) {
-    if (++writable_nesting_level > 1) return true;
-  } else {
-    DCHECK_GT(writable_nesting_level, 0);
-    if (--writable_nesting_level > 0) return true;
+void WasmCodeAllocator::RemoveWriter() {
+  DCHECK(protect_code_memory_);
+  DCHECK_GT(writers_count_, 0);
+  if (--writers_count_ > 0) return;
+
+  // Switch all memory to non-writable.
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
+  for (base::AddressRegion writable : writable_memory_) {
+    for (base::AddressRegion split_range :
+         SplitRangeByReservationsIfNeeded(writable, owned_code_space_)) {
+      TRACE_HEAP("Set 0x%" V8PRIxPTR ":0x%" V8PRIxPTR " to RX\n",
+                 split_range.begin(), split_range.end());
+      CHECK(SetPermissions(page_allocator, split_range.begin(),
+                           split_range.size(), PageAllocator::kReadExecute));
+    }
   }
-  writable = writable_nesting_level > 0;
-
-  int key = code_manager_->memory_protection_key_;
-
-  MemoryProtectionKeyPermission permissions =
-      writable ? kNoRestrictions : kDisableWrite;
-
-  TRACE_HEAP("Setting memory protection key %d to writable: %d.\n", key,
-             writable);
-  return SetPermissionsForMemoryProtectionKey(key, permissions);
+  writable_memory_.clear();
 }
 
-void WasmCodeAllocator::FreeCode(Vector<WasmCode* const> codes) {
+void WasmCodeAllocator::MakeWritable(base::AddressRegion region) {
+  if (!protect_code_memory_) return;
+  DCHECK_LT(0, writers_count_);
+  DCHECK(!region.is_empty());
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
+
+  // Align to commit page size.
+  size_t commit_page_size = page_allocator->CommitPageSize();
+  DCHECK(base::bits::IsPowerOfTwo(commit_page_size));
+  Address begin = RoundDown(region.begin(), commit_page_size);
+  Address end = RoundUp(region.end(), commit_page_size);
+  region = base::AddressRegion(begin, end - begin);
+
+  InsertIntoWritableRegions(region, true);
+}
+
+void WasmCodeAllocator::FreeCode(base::Vector<WasmCode* const> codes) {
   // Zap code area and collect freed code regions.
   DisjointAllocationPool freed_regions;
   size_t code_size = 0;
-  CODE_SPACE_WRITE_SCOPE
   for (WasmCode* code : codes) {
-    // TODO(dlehmann): Pull the {NativeModuleModificationScope} out of the loop.
-    // However, its constructor requires a {NativeModule}.
-    // Can be fixed if {NativeModuleModificationScope()} is changed to take
-    // only a {WasmCodeAllocator} in its constructor.
-    NativeModuleModificationScope native_module_modification_scope(
-        code->native_module());
-    ZapCode(code->instruction_start(), code->instructions().size());
-    FlushInstructionCache(code->instruction_start(),
-                          code->instructions().size());
     code_size += code->instructions().size();
     freed_regions.Merge(base::AddressRegion{code->instruction_start(),
                                             code->instructions().size()});
@@ -798,8 +850,7 @@ void WasmCodeAllocator::FreeCode(Vector<WasmCode* const> codes) {
   // pages to decommit into {regions_to_decommit} (decommitting is expensive,
   // so try to merge regions before decommitting).
   DisjointAllocationPool regions_to_decommit;
-  PageAllocator* allocator = GetPlatformPageAllocator();
-  size_t commit_page_size = allocator->CommitPageSize();
+  size_t commit_page_size = CommitPageSize();
   for (auto region : freed_regions.regions()) {
     auto merged_region = freed_code_space_.Merge(region);
     Address discard_start =
@@ -812,13 +863,14 @@ void WasmCodeAllocator::FreeCode(Vector<WasmCode* const> codes) {
     regions_to_decommit.Merge({discard_start, discard_end - discard_start});
   }
 
+  auto* code_manager = GetWasmCodeManager();
   for (auto region : regions_to_decommit.regions()) {
     size_t old_committed = committed_code_space_.fetch_sub(region.size());
     DCHECK_GE(old_committed, region.size());
     USE(old_committed);
     for (base::AddressRegion split_range :
          SplitRangeByReservationsIfNeeded(region, owned_code_space_)) {
-      code_manager_->Decommit(split_range);
+      code_manager->Decommit(split_range);
     }
   }
 }
@@ -827,43 +879,130 @@ size_t WasmCodeAllocator::GetNumCodeSpaces() const {
   return owned_code_space_.size();
 }
 
+void WasmCodeAllocator::InsertIntoWritableRegions(base::AddressRegion region,
+                                                  bool switch_to_writable) {
+  size_t new_writable_memory = 0;
+
+  CheckWritableMemoryRegions check_on_return{writable_memory_, region,
+                                             new_writable_memory};
+
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
+  // Subroutine to make a non-writable region writable (if {switch_to_writable}
+  // is {true}) and insert it into {writable_memory_}.
+  auto make_writable = [&](decltype(writable_memory_)::iterator insert_pos,
+                           base::AddressRegion region) {
+    new_writable_memory += region.size();
+    if (switch_to_writable) {
+      for (base::AddressRegion split_range :
+           SplitRangeByReservationsIfNeeded(region, owned_code_space_)) {
+        TRACE_HEAP("Set 0x%" V8PRIxPTR ":0x%" V8PRIxPTR " to RWX\n",
+                   split_range.begin(), split_range.end());
+        CHECK(SetPermissions(page_allocator, split_range.begin(),
+                             split_range.size(),
+                             PageAllocator::kReadWriteExecute));
+      }
+    }
+
+    // Insert {region} into {writable_memory_} before {insert_pos}, potentially
+    // merging it with the surrounding regions.
+    if (insert_pos != writable_memory_.begin()) {
+      auto previous = insert_pos;
+      --previous;
+      if (previous->end() == region.begin()) {
+        region = {previous->begin(), previous->size() + region.size()};
+        writable_memory_.erase(previous);
+      }
+    }
+    if (insert_pos != writable_memory_.end() &&
+        region.end() == insert_pos->begin()) {
+      region = {region.begin(), insert_pos->size() + region.size()};
+      insert_pos = writable_memory_.erase(insert_pos);
+    }
+    writable_memory_.insert(insert_pos, region);
+  };
+
+  DCHECK(!region.is_empty());
+  // Find a possible insertion position by identifying the first region whose
+  // start address is not less than that of {new_region}, and the starting the
+  // merge from the existing region before that.
+  auto it = writable_memory_.lower_bound(region);
+  if (it != writable_memory_.begin()) --it;
+  for (;; ++it) {
+    if (it == writable_memory_.end() || it->begin() >= region.end()) {
+      // No overlap; add before {it}.
+      make_writable(it, region);
+      return;
+    }
+    if (it->end() <= region.begin()) continue;  // Continue after {it}.
+    base::AddressRegion overlap = it->GetOverlap(region);
+    DCHECK(!overlap.is_empty());
+    if (overlap.begin() == region.begin()) {
+      if (overlap.end() == region.end()) return;  // Fully contained already.
+      // Remove overlap (which is already writable) and continue.
+      region = {overlap.end(), region.end() - overlap.end()};
+      continue;
+    }
+    if (overlap.end() == region.end()) {
+      // Remove overlap (which is already writable), then make the remaining
+      // region writable.
+      region = {region.begin(), overlap.begin() - region.begin()};
+      make_writable(it, region);
+      return;
+    }
+    // Split {region}, make the split writable, and continue with the rest.
+    base::AddressRegion split = {region.begin(),
+                                 overlap.begin() - region.begin()};
+    make_writable(it, split);
+    region = {overlap.end(), region.end() - overlap.end()};
+  }
+}
+
 // static
 constexpr base::AddressRegion WasmCodeAllocator::kUnrestrictedRegion;
 
-NativeModule::NativeModule(WasmEngine* engine, const WasmFeatures& enabled,
+namespace {
+BoundsCheckStrategy GetBoundsChecks(const WasmModule* module) {
+  if (!FLAG_wasm_bounds_checks) return kNoBoundsChecks;
+  if (FLAG_wasm_enforce_bounds_checks) return kExplicitBoundsChecks;
+  // We do not have trap handler support for memory64 yet.
+  if (module->is_memory64) return kExplicitBoundsChecks;
+  if (trap_handler::IsTrapHandlerEnabled()) return kTrapHandler;
+  return kExplicitBoundsChecks;
+}
+}  // namespace
+
+NativeModule::NativeModule(const WasmFeatures& enabled,
+                           DynamicTiering dynamic_tiering,
                            VirtualMemory code_space,
                            std::shared_ptr<const WasmModule> module,
                            std::shared_ptr<Counters> async_counters,
                            std::shared_ptr<NativeModule>* shared_this)
-    : engine_(engine),
-      engine_scope_(engine->GetBarrierForBackgroundCompile()->TryLock()),
-      code_allocator_(engine->code_manager(), async_counters),
+    : engine_scope_(
+          GetWasmEngine()->GetBarrierForBackgroundCompile()->TryLock()),
+      code_allocator_(async_counters),
       enabled_features_(enabled),
       module_(std::move(module)),
       import_wrapper_cache_(std::unique_ptr<WasmImportWrapperCache>(
           new WasmImportWrapperCache())),
-      use_trap_handler_(trap_handler::IsTrapHandlerEnabled() ? kUseTrapHandler
-                                                             : kNoTrapHandler) {
+      bounds_checks_(GetBoundsChecks(module_.get())) {
   DCHECK(engine_scope_);
   // We receive a pointer to an empty {std::shared_ptr}, and install ourselve
   // there.
   DCHECK_NOT_NULL(shared_this);
   DCHECK_NULL(*shared_this);
   shared_this->reset(this);
-  compilation_state_ =
-      CompilationState::New(*shared_this, std::move(async_counters));
-  compilation_state_->InitCompileJob(engine);
+  compilation_state_ = CompilationState::New(
+      *shared_this, std::move(async_counters), dynamic_tiering);
+  compilation_state_->InitCompileJob();
   DCHECK_NOT_NULL(module_);
   if (module_->num_declared_functions > 0) {
     code_table_ =
         std::make_unique<WasmCode*[]>(module_->num_declared_functions);
-    num_liftoff_function_calls_ =
+    tiering_budgets_ =
         std::make_unique<uint32_t[]>(module_->num_declared_functions);
 
-    // Start counter at 4 to avoid runtime calls for smaller numbers.
-    constexpr int kCounterStart = 4;
-    std::fill_n(num_liftoff_function_calls_.get(),
-                module_->num_declared_functions, kCounterStart);
+    std::fill_n(tiering_budgets_.get(), module_->num_declared_functions,
+                FLAG_wasm_tiering_budget);
   }
   // Even though there cannot be another thread using this object (since we are
   // just constructing it), we need to hold the mutex to fulfill the
@@ -880,8 +1019,8 @@ void NativeModule::ReserveCodeTableForTesting(uint32_t max_functions) {
   DCHECK_LE(module_->num_declared_functions, max_functions);
   auto new_table = std::make_unique<WasmCode*[]>(max_functions);
   if (module_->num_declared_functions > 0) {
-    base::Memcpy(new_table.get(), code_table_.get(),
-                 module_->num_declared_functions * sizeof(WasmCode*));
+    memcpy(new_table.get(), code_table_.get(),
+           module_->num_declared_functions * sizeof(WasmCode*));
   }
   code_table_ = std::move(new_table);
 
@@ -910,43 +1049,39 @@ void NativeModule::LogWasmCodes(Isolate* isolate, Script script) {
 
   // Log all owned code, not just the current entries in the code table. This
   // will also include import wrappers.
-  base::RecursiveMutexGuard lock(&allocation_mutex_);
-  for (auto& owned_entry : owned_code_) {
-    owned_entry.second->LogCode(isolate, source_url.get(), script.id());
-  }
-  for (auto& owned_entry : new_owned_code_) {
-    owned_entry->LogCode(isolate, source_url.get(), script.id());
+  WasmCodeRefScope code_ref_scope;
+  for (auto& code : SnapshotAllOwnedCode()) {
+    code->LogCode(isolate, source_url.get(), script.id());
   }
 }
 
 CompilationEnv NativeModule::CreateCompilationEnv() const {
-  return {module(), use_trap_handler_, kRuntimeExceptionSupport,
-          enabled_features_};
+  return {module(), bounds_checks_, kRuntimeExceptionSupport, enabled_features_,
+          compilation_state()->dynamic_tiering()};
 }
 
 WasmCode* NativeModule::AddCodeForTesting(Handle<Code> code) {
-  CODE_SPACE_WRITE_SCOPE
-  NativeModuleModificationScope native_module_modification_scope(this);
+  CodeSpaceWriteScope code_space_write_scope(this);
   const size_t relocation_size = code->relocation_size();
-  OwnedVector<byte> reloc_info;
+  base::OwnedVector<byte> reloc_info;
   if (relocation_size > 0) {
-    reloc_info = OwnedVector<byte>::Of(
-        Vector<byte>{code->relocation_start(), relocation_size});
+    reloc_info = base::OwnedVector<byte>::Of(
+        base::Vector<byte>{code->relocation_start(), relocation_size});
   }
   Handle<ByteArray> source_pos_table(code->source_position_table(),
                                      code->GetIsolate());
-  OwnedVector<byte> source_pos =
-      OwnedVector<byte>::NewForOverwrite(source_pos_table->length());
+  base::OwnedVector<byte> source_pos =
+      base::OwnedVector<byte>::NewForOverwrite(source_pos_table->length());
   if (source_pos_table->length() > 0) {
     source_pos_table->copy_out(0, source_pos.start(),
                                source_pos_table->length());
   }
   CHECK(!code->is_off_heap_trampoline());
   STATIC_ASSERT(Code::kOnHeapBodyIsContiguous);
-  Vector<const byte> instructions(
+  base::Vector<const byte> instructions(
       reinterpret_cast<byte*>(code->raw_body_start()),
       static_cast<size_t>(code->raw_body_size()));
-  const int stack_slots = code->has_safepoint_info() ? code->stack_slots() : 0;
+  const int stack_slots = code->stack_slots();
 
   // Metadata offsets in Code objects are relative to the start of the metadata
   // section, whereas WasmCode expects offsets relative to InstructionStart.
@@ -962,10 +1097,9 @@ WasmCode* NativeModule::AddCodeForTesting(Handle<Code> code) {
   const int code_comments_offset = base_offset + code->code_comments_offset();
 
   base::RecursiveMutexGuard guard{&allocation_mutex_};
-  Vector<uint8_t> dst_code_bytes =
+  base::Vector<uint8_t> dst_code_bytes =
       code_allocator_.AllocateForCode(this, instructions.size());
-  base::Memcpy(dst_code_bytes.begin(), instructions.begin(),
-               instructions.size());
+  memcpy(dst_code_bytes.begin(), instructions.begin(), instructions.size());
 
   // Apply the relocation delta by iterating over the RelocInfo.
   intptr_t delta = reinterpret_cast<Address>(dst_code_bytes.begin()) -
@@ -996,22 +1130,22 @@ WasmCode* NativeModule::AddCodeForTesting(Handle<Code> code) {
   FlushInstructionCache(dst_code_bytes.begin(), dst_code_bytes.size());
 
   std::unique_ptr<WasmCode> new_code{
-      new WasmCode{this,                    // native_module
-                   kAnonymousFuncIndex,     // index
-                   dst_code_bytes,          // instructions
-                   stack_slots,             // stack_slots
-                   0,                       // tagged_parameter_slots
-                   safepoint_table_offset,  // safepoint_table_offset
-                   handler_table_offset,    // handler_table_offset
-                   constant_pool_offset,    // constant_pool_offset
-                   code_comments_offset,    // code_comments_offset
-                   instructions.length(),   // unpadded_binary_size
-                   {},                      // protected_instructions
-                   reloc_info.as_vector(),  // reloc_info
-                   source_pos.as_vector(),  // source positions
-                   WasmCode::kFunction,     // kind
-                   ExecutionTier::kNone,    // tier
-                   kNoDebugging}};          // for_debugging
+      new WasmCode{this,                     // native_module
+                   kAnonymousFuncIndex,      // index
+                   dst_code_bytes,           // instructions
+                   stack_slots,              // stack_slots
+                   0,                        // tagged_parameter_slots
+                   safepoint_table_offset,   // safepoint_table_offset
+                   handler_table_offset,     // handler_table_offset
+                   constant_pool_offset,     // constant_pool_offset
+                   code_comments_offset,     // code_comments_offset
+                   instructions.length(),    // unpadded_binary_size
+                   {},                       // protected_instructions
+                   reloc_info.as_vector(),   // reloc_info
+                   source_pos.as_vector(),   // source positions
+                   WasmCode::kWasmFunction,  // kind
+                   ExecutionTier::kNone,     // tier
+                   kNoDebugging}};           // for_debugging
   new_code->MaybePrint();
   new_code->Validate();
 
@@ -1022,13 +1156,14 @@ void NativeModule::UseLazyStub(uint32_t func_index) {
   DCHECK_LE(module_->num_imported_functions, func_index);
   DCHECK_LT(func_index,
             module_->num_imported_functions + module_->num_declared_functions);
+  // Avoid opening a new write scope per function. The caller should hold the
+  // scope instead.
+  DCHECK(CodeSpaceWriteScope::IsInScope());
 
   base::RecursiveMutexGuard guard(&allocation_mutex_);
   if (!lazy_compile_table_) {
     uint32_t num_slots = module_->num_declared_functions;
     WasmCodeRefScope code_ref_scope;
-    CODE_SPACE_WRITE_SCOPE
-    NativeModuleModificationScope native_module_modification_scope(this);
     DCHECK_EQ(1, code_space_data_.size());
     base::AddressRegion single_code_space_region = code_space_data_[0].region;
     lazy_compile_table_ = CreateEmptyJumpTableInRegionLocked(
@@ -1054,10 +1189,11 @@ void NativeModule::UseLazyStub(uint32_t func_index) {
 
 std::unique_ptr<WasmCode> NativeModule::AddCode(
     int index, const CodeDesc& desc, int stack_slots,
-    int tagged_parameter_slots, Vector<const byte> protected_instructions_data,
-    Vector<const byte> source_position_table, WasmCode::Kind kind,
+    uint32_t tagged_parameter_slots,
+    base::Vector<const byte> protected_instructions_data,
+    base::Vector<const byte> source_position_table, WasmCode::Kind kind,
     ExecutionTier tier, ForDebugging for_debugging) {
-  Vector<byte> code_space;
+  base::Vector<byte> code_space;
   NativeModule::JumpTablesRef jump_table_ref;
   {
     base::RecursiveMutexGuard guard{&allocation_mutex_};
@@ -1073,12 +1209,14 @@ std::unique_ptr<WasmCode> NativeModule::AddCode(
 
 std::unique_ptr<WasmCode> NativeModule::AddCodeWithCodeSpace(
     int index, const CodeDesc& desc, int stack_slots,
-    int tagged_parameter_slots, Vector<const byte> protected_instructions_data,
-    Vector<const byte> source_position_table, WasmCode::Kind kind,
+    uint32_t tagged_parameter_slots,
+    base::Vector<const byte> protected_instructions_data,
+    base::Vector<const byte> source_position_table, WasmCode::Kind kind,
     ExecutionTier tier, ForDebugging for_debugging,
-    Vector<uint8_t> dst_code_bytes, const JumpTablesRef& jump_tables) {
-  Vector<byte> reloc_info{desc.buffer + desc.buffer_size - desc.reloc_size,
-                          static_cast<size_t>(desc.reloc_size)};
+    base::Vector<uint8_t> dst_code_bytes, const JumpTablesRef& jump_tables) {
+  base::Vector<byte> reloc_info{
+      desc.buffer + desc.buffer_size - desc.reloc_size,
+      static_cast<size_t>(desc.reloc_size)};
   UpdateCodeSize(desc.instr_size, tier, for_debugging);
 
   // TODO(jgruber,v8:8758): Remove this translation. It exists only because
@@ -1091,10 +1229,8 @@ std::unique_ptr<WasmCode> NativeModule::AddCodeWithCodeSpace(
   const int code_comments_offset = desc.code_comments_offset;
   const int instr_size = desc.instr_size;
 
-  CODE_SPACE_WRITE_SCOPE
-  NativeModuleModificationScope native_module_modification_scope(this);
-  base::Memcpy(dst_code_bytes.begin(), desc.buffer,
-               static_cast<size_t>(desc.instr_size));
+  memcpy(dst_code_bytes.begin(), desc.buffer,
+         static_cast<size_t>(desc.instr_size));
 
   // Apply the relocation delta by iterating over the RelocInfo.
   intptr_t delta = dst_code_bytes.begin() - desc.buffer;
@@ -1134,6 +1270,7 @@ std::unique_ptr<WasmCode> NativeModule::AddCodeWithCodeSpace(
       safepoint_table_offset, handler_table_offset, constant_pool_offset,
       code_comments_offset, instr_size, protected_instructions_data, reloc_info,
       source_position_table, kind, tier, for_debugging}};
+
   code->MaybePrint();
   code->Validate();
 
@@ -1144,11 +1281,15 @@ WasmCode* NativeModule::PublishCode(std::unique_ptr<WasmCode> code) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm.detailed"),
                "wasm.PublishCode");
   base::RecursiveMutexGuard lock(&allocation_mutex_);
+  CodeSpaceWriteScope code_space_write_scope(this);
   return PublishCodeLocked(std::move(code));
 }
 
 std::vector<WasmCode*> NativeModule::PublishCode(
-    Vector<std::unique_ptr<WasmCode>> codes) {
+    base::Vector<std::unique_ptr<WasmCode>> codes) {
+  // Publishing often happens in a loop, so the caller should hold the
+  // {CodeSpaceWriteScope} outside of such a loop.
+  DCHECK(CodeSpaceWriteScope::IsInScope());
   TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("v8.wasm.detailed"),
                "wasm.PublishCode", "number", codes.size());
   std::vector<WasmCode*> published_code;
@@ -1166,7 +1307,7 @@ WasmCode::Kind GetCodeKind(const WasmCompilationResult& result) {
     case WasmCompilationResult::kWasmToJsWrapper:
       return WasmCode::Kind::kWasmToJsWrapper;
     case WasmCompilationResult::kFunction:
-      return WasmCode::Kind::kFunction;
+      return WasmCode::Kind::kWasmFunction;
     default:
       UNREACHABLE();
   }
@@ -1216,8 +1357,10 @@ WasmCode* NativeModule::PublishCodeLocked(
        (tiering_state_ == kTieredDown
             // Tiered down: Install breakpoints over normal debug code.
             ? prior_code->for_debugging() <= code->for_debugging()
-            // Tiered up: Install if the tier is higher than before.
-            : prior_code->tier() < code->tier()));
+            // Tiered up: Install if the tier is higher than before or we
+            // replace debugging code with non-debugging code.
+            : (prior_code->tier() < code->tier() ||
+               (prior_code->for_debugging() && !code->for_debugging()))));
   if (update_code_table) {
     code_table_[slot_idx] = code;
     if (prior_code) {
@@ -1234,10 +1377,6 @@ WasmCode* NativeModule::PublishCodeLocked(
     // {WasmCodeRefScope} though, so it cannot die here.
     code->DecRefOnLiveCode();
   }
-  if (!code->for_debugging() && tiering_state_ == kTieredDown &&
-      code->tier() == ExecutionTier::kTurbofan) {
-    liftoff_bailout_count_.fetch_add(1);
-  }
 
   return code;
 }
@@ -1250,7 +1389,9 @@ void NativeModule::ReinstallDebugCode(WasmCode* code) {
   DCHECK(!code->IsAnonymous());
   DCHECK_LE(module_->num_imported_functions, code->index());
   DCHECK_LT(code->index(), num_functions());
-  DCHECK_EQ(kTieredDown, tiering_state_);
+
+  // If the module is tiered up by now, do not reinstall debug code.
+  if (tiering_state_ != kTieredDown) return;
 
   uint32_t slot_idx = declared_function_index(module(), code->index());
   if (WasmCode* prior_code = code_table_[slot_idx]) {
@@ -1262,13 +1403,14 @@ void NativeModule::ReinstallDebugCode(WasmCode* code) {
   code_table_[slot_idx] = code;
   code->IncRef();
 
+  CodeSpaceWriteScope code_space_write_scope(this);
   PatchJumpTablesLocked(slot_idx, code->instruction_start());
 }
 
-std::pair<Vector<uint8_t>, NativeModule::JumpTablesRef>
+std::pair<base::Vector<uint8_t>, NativeModule::JumpTablesRef>
 NativeModule::AllocateForDeserializedCode(size_t total_code_size) {
   base::RecursiveMutexGuard guard{&allocation_mutex_};
-  Vector<uint8_t> code_space =
+  base::Vector<uint8_t> code_space =
       code_allocator_.AllocateForCode(this, total_code_size);
   auto jump_tables =
       FindJumpTablesForRegionLocked(base::AddressRegionOf(code_space));
@@ -1276,13 +1418,14 @@ NativeModule::AllocateForDeserializedCode(size_t total_code_size) {
 }
 
 std::unique_ptr<WasmCode> NativeModule::AddDeserializedCode(
-    int index, Vector<byte> instructions, int stack_slots,
-    int tagged_parameter_slots, int safepoint_table_offset,
+    int index, base::Vector<byte> instructions, int stack_slots,
+    uint32_t tagged_parameter_slots, int safepoint_table_offset,
     int handler_table_offset, int constant_pool_offset,
     int code_comments_offset, int unpadded_binary_size,
-    Vector<const byte> protected_instructions_data,
-    Vector<const byte> reloc_info, Vector<const byte> source_position_table,
-    WasmCode::Kind kind, ExecutionTier tier) {
+    base::Vector<const byte> protected_instructions_data,
+    base::Vector<const byte> reloc_info,
+    base::Vector<const byte> source_position_table, WasmCode::Kind kind,
+    ExecutionTier tier) {
   UpdateCodeSize(instructions.size(), tier, kNoDebugging);
 
   return std::unique_ptr<WasmCode>{new WasmCode{
@@ -1296,10 +1439,21 @@ std::vector<WasmCode*> NativeModule::SnapshotCodeTable() const {
   base::RecursiveMutexGuard lock(&allocation_mutex_);
   WasmCode** start = code_table_.get();
   WasmCode** end = start + module_->num_declared_functions;
-  for (WasmCode* code : VectorOf(start, end - start)) {
+  for (WasmCode* code : base::VectorOf(start, end - start)) {
     if (code) WasmCodeRefScope::AddRef(code);
   }
   return std::vector<WasmCode*>{start, end};
+}
+
+std::vector<WasmCode*> NativeModule::SnapshotAllOwnedCode() const {
+  base::RecursiveMutexGuard lock(&allocation_mutex_);
+  if (!new_owned_code_.empty()) TransferNewOwnedCodeLocked();
+
+  std::vector<WasmCode*> all_code(owned_code_.size());
+  std::transform(owned_code_.begin(), owned_code_.end(), all_code.begin(),
+                 [](auto& entry) { return entry.second.get(); });
+  std::for_each(all_code.begin(), all_code.end(), WasmCodeRefScope::AddRef);
+  return all_code;
 }
 
 WasmCode* NativeModule::GetCode(uint32_t index) const {
@@ -1334,12 +1488,11 @@ WasmCode* NativeModule::CreateEmptyJumpTableInRegionLocked(
   allocation_mutex_.AssertHeld();
   // Only call this if we really need a jump table.
   DCHECK_LT(0, jump_table_size);
-  Vector<uint8_t> code_space =
+  CodeSpaceWriteScope code_space_write_scope(this);
+  base::Vector<uint8_t> code_space =
       code_allocator_.AllocateForCodeInRegion(this, jump_table_size, region);
   DCHECK(!code_space.empty());
   UpdateCodeSize(jump_table_size, ExecutionTier::kNone, kNoDebugging);
-  CODE_SPACE_WRITE_SCOPE
-  NativeModuleModificationScope native_module_modification_scope(this);
   ZapCode(reinterpret_cast<Address>(code_space.begin()), code_space.size());
   std::unique_ptr<WasmCode> code{
       new WasmCode{this,                  // native_module
@@ -1373,8 +1526,6 @@ void NativeModule::UpdateCodeSize(size_t size, ExecutionTier tier,
 void NativeModule::PatchJumpTablesLocked(uint32_t slot_index, Address target) {
   allocation_mutex_.AssertHeld();
 
-  CODE_SPACE_WRITE_SCOPE
-  NativeModuleModificationScope native_module_modification_scope(this);
   for (auto& code_space_data : code_space_data_) {
     DCHECK_IMPLIES(code_space_data.jump_table, code_space_data.far_jump_table);
     if (!code_space_data.jump_table) continue;
@@ -1388,6 +1539,22 @@ void NativeModule::PatchJumpTableLocked(const CodeSpaceData& code_space_data,
 
   DCHECK_NOT_NULL(code_space_data.jump_table);
   DCHECK_NOT_NULL(code_space_data.far_jump_table);
+
+  // Jump tables are often allocated next to each other, so we can switch
+  // permissions on both at the same time.
+  if (code_space_data.jump_table->instructions().end() ==
+      code_space_data.far_jump_table->instructions().begin()) {
+    base::Vector<uint8_t> jump_tables_space = base::VectorOf(
+        code_space_data.jump_table->instructions().begin(),
+        code_space_data.jump_table->instructions().size() +
+            code_space_data.far_jump_table->instructions().size());
+    code_allocator_.MakeWritable(AddressRegionOf(jump_tables_space));
+  } else {
+    code_allocator_.MakeWritable(
+        AddressRegionOf(code_space_data.jump_table->instructions()));
+    code_allocator_.MakeWritable(
+        AddressRegionOf(code_space_data.far_jump_table->instructions()));
+  }
 
   DCHECK_LT(slot_index, module_->num_declared_functions);
   Address jump_table_slot =
@@ -1417,17 +1584,17 @@ void NativeModule::AddCodeSpaceLocked(base::AddressRegion region) {
   DCHECK_GE(region.size(),
             2 * OverheadPerCodeSpace(module()->num_declared_functions));
 
+  CodeSpaceWriteScope code_space_write_scope(this);
 #if defined(V8_OS_WIN64)
   // On some platforms, specifically Win64, we need to reserve some pages at
   // the beginning of an executable space.
   // See src/heap/spaces.cc, MemoryAllocator::InitializeCodePageAllocator() and
   // https://cs.chromium.org/chromium/src/components/crash/content/app/crashpad_win.cc?rcl=fd680447881449fba2edcf0589320e7253719212&l=204
   // for details.
-  if (engine_->code_manager()
-          ->CanRegisterUnwindInfoForNonABICompliantCodeRange()) {
+  if (WasmCodeManager::CanRegisterUnwindInfoForNonABICompliantCodeRange()) {
     size_t size = Heap::GetCodeRangeReservedAreaSize();
     DCHECK_LT(0, size);
-    Vector<byte> padding =
+    base::Vector<byte> padding =
         code_allocator_.AllocateForCodeInRegion(this, size, region);
     CHECK_EQ(reinterpret_cast<Address>(padding.begin()), region.begin());
     win64_unwindinfo::RegisterNonABICompliantCodeRange(
@@ -1436,8 +1603,6 @@ void NativeModule::AddCodeSpaceLocked(base::AddressRegion region) {
 #endif  // V8_OS_WIN64
 
   WasmCodeRefScope code_ref_scope;
-  CODE_SPACE_WRITE_SCOPE
-  NativeModuleModificationScope native_module_modification_scope(this);
   WasmCode* jump_table = nullptr;
   WasmCode* far_jump_table = nullptr;
   const uint32_t num_wasm_functions = module_->num_declared_functions;
@@ -1462,16 +1627,16 @@ void NativeModule::AddCodeSpaceLocked(base::AddressRegion region) {
         region);
     CHECK(region.contains(far_jump_table->instruction_start()));
     EmbeddedData embedded_data = EmbeddedData::FromBlob();
-#define RUNTIME_STUB(Name) Builtins::k##Name,
+#define RUNTIME_STUB(Name) Builtin::k##Name,
 #define RUNTIME_STUB_TRAP(Name) RUNTIME_STUB(ThrowWasm##Name)
-    Builtins::Name stub_names[WasmCode::kRuntimeStubCount] = {
+    Builtin stub_names[WasmCode::kRuntimeStubCount] = {
         WASM_RUNTIME_STUB_LIST(RUNTIME_STUB, RUNTIME_STUB_TRAP)};
 #undef RUNTIME_STUB
 #undef RUNTIME_STUB_TRAP
     STATIC_ASSERT(Builtins::kAllBuiltinsAreIsolateIndependent);
     Address builtin_addresses[WasmCode::kRuntimeStubCount];
     for (int i = 0; i < WasmCode::kRuntimeStubCount; ++i) {
-      Builtins::Name builtin = stub_names[i];
+      Builtin builtin = stub_names[i];
       builtin_addresses[i] = embedded_data.InstructionStartOfBuiltin(builtin);
     }
     JumpTableAssembler::GenerateFarJumpTable(
@@ -1513,28 +1678,46 @@ namespace {
 class NativeModuleWireBytesStorage final : public WireBytesStorage {
  public:
   explicit NativeModuleWireBytesStorage(
-      std::shared_ptr<OwnedVector<const uint8_t>> wire_bytes)
+      std::shared_ptr<base::OwnedVector<const uint8_t>> wire_bytes)
       : wire_bytes_(std::move(wire_bytes)) {}
 
-  Vector<const uint8_t> GetCode(WireBytesRef ref) const final {
+  base::Vector<const uint8_t> GetCode(WireBytesRef ref) const final {
     return std::atomic_load(&wire_bytes_)
         ->as_vector()
         .SubVector(ref.offset(), ref.end_offset());
   }
 
+  base::Optional<ModuleWireBytes> GetModuleBytes() const final {
+    return base::Optional<ModuleWireBytes>(
+        std::atomic_load(&wire_bytes_)->as_vector());
+  }
+
  private:
-  const std::shared_ptr<OwnedVector<const uint8_t>> wire_bytes_;
+  const std::shared_ptr<base::OwnedVector<const uint8_t>> wire_bytes_;
 };
 }  // namespace
 
-void NativeModule::SetWireBytes(OwnedVector<const uint8_t> wire_bytes) {
+void NativeModule::SetWireBytes(base::OwnedVector<const uint8_t> wire_bytes) {
   auto shared_wire_bytes =
-      std::make_shared<OwnedVector<const uint8_t>>(std::move(wire_bytes));
+      std::make_shared<base::OwnedVector<const uint8_t>>(std::move(wire_bytes));
   std::atomic_store(&wire_bytes_, shared_wire_bytes);
   if (!shared_wire_bytes->empty()) {
     compilation_state_->SetWireBytesStorage(
         std::make_shared<NativeModuleWireBytesStorage>(
             std::move(shared_wire_bytes)));
+  }
+}
+
+void NativeModule::UpdateCPUDuration(size_t cpu_duration, ExecutionTier tier) {
+  if (tier == WasmCompilationUnit::GetBaselineExecutionTier(this->module())) {
+    if (!compilation_state_->baseline_compilation_finished()) {
+      baseline_compilation_cpu_duration_.fetch_add(cpu_duration,
+                                                   std::memory_order_relaxed);
+    }
+  } else if (tier == ExecutionTier::kTurbofan) {
+    if (!compilation_state_->top_tier_compilation_finished()) {
+      tier_up_cpu_duration_.fetch_add(cpu_duration, std::memory_order_relaxed);
+    }
   }
 }
 
@@ -1697,33 +1880,28 @@ NativeModule::~NativeModule() {
   // Cancel all background compilation before resetting any field of the
   // NativeModule or freeing anything.
   compilation_state_->CancelCompilation();
-  engine_->FreeNativeModule(this);
+  GetWasmEngine()->FreeNativeModule(this);
   // Free the import wrapper cache before releasing the {WasmCode} objects in
   // {owned_code_}. The destructor of {WasmImportWrapperCache} still needs to
   // decrease reference counts on the {WasmCode} objects.
   import_wrapper_cache_.reset();
 }
 
-WasmCodeManager::WasmCodeManager(size_t max_committed)
-    : max_committed_code_space_(max_committed),
-      critical_committed_code_space_(max_committed / 2),
-      memory_protection_key_(FLAG_wasm_memory_protection_keys
-                                 ? AllocateMemoryProtectionKey()
-                                 : kNoMemoryProtectionKey) {
-  DCHECK_LE(max_committed, FLAG_wasm_max_code_space * MB);
-}
+WasmCodeManager::WasmCodeManager()
+    : max_committed_code_space_(FLAG_wasm_max_code_space * MB),
+      critical_committed_code_space_(max_committed_code_space_ / 2),
+      memory_protection_key_(AllocateMemoryProtectionKey()) {}
 
 WasmCodeManager::~WasmCodeManager() {
   // No more committed code space.
   DCHECK_EQ(0, total_committed_code_space_.load());
 
-  if (FLAG_wasm_memory_protection_keys) {
-    FreeMemoryProtectionKey(memory_protection_key_);
-  }
+  FreeMemoryProtectionKey(memory_protection_key_);
 }
 
 #if defined(V8_OS_WIN64)
-bool WasmCodeManager::CanRegisterUnwindInfoForNonABICompliantCodeRange() const {
+// static
+bool WasmCodeManager::CanRegisterUnwindInfoForNonABICompliantCodeRange() {
   return win64_unwindinfo::CanRegisterUnwindInfoForNonABICompliantCodeRange() &&
          FLAG_win64_unwinding_info;
 }
@@ -1731,7 +1909,7 @@ bool WasmCodeManager::CanRegisterUnwindInfoForNonABICompliantCodeRange() const {
 
 void WasmCodeManager::Commit(base::AddressRegion region) {
   // TODO(v8:8462): Remove eager commit once perf supports remapping.
-  if (V8_UNLIKELY(FLAG_perf_prof)) return;
+  if (FLAG_perf_prof) return;
   DCHECK(IsAligned(region.begin(), CommitPageSize()));
   DCHECK(IsAligned(region.size(), CommitPageSize()));
   // Reserve the size. Use CAS loop to avoid overflow on
@@ -1757,17 +1935,16 @@ void WasmCodeManager::Commit(base::AddressRegion region) {
   // TODO(dlehmann): This allocates initially as writable and executable, and
   // as such is not safe-by-default. In particular, if
   // {WasmCodeAllocator::SetWritable(false)} is never called afterwards (e.g.,
-  // because no {NativeModuleModificationScope} is created), the writable
-  // permission is never withdrawn.
+  // because no {CodeSpaceWriteScope} is created), the writable permission is
+  // never withdrawn.
   // One potential fix is to allocate initially with kReadExecute only, which
-  // forces all compilation threads to add the missing
-  // {NativeModuleModificationScope}s before modification; and/or adding
-  // DCHECKs that {NativeModuleModificationScope} is open when calling this
-  // method.
+  // forces all compilation threads to add the missing {CodeSpaceWriteScope}s
+  // before modification; and/or adding DCHECKs that {CodeSpaceWriteScope} is
+  // open when calling this method.
   PageAllocator::Permission permission = PageAllocator::kReadWriteExecute;
 
   bool success;
-  if (FLAG_wasm_memory_protection_keys) {
+  if (MemoryProtectionKeysEnabled()) {
     TRACE_HEAP(
         "Setting rwx permissions and memory protection key %d for 0x%" PRIxPTR
         ":0x%" PRIxPTR "\n",
@@ -1791,22 +1968,17 @@ void WasmCodeManager::Commit(base::AddressRegion region) {
 
 void WasmCodeManager::Decommit(base::AddressRegion region) {
   // TODO(v8:8462): Remove this once perf supports remapping.
-  if (V8_UNLIKELY(FLAG_perf_prof)) return;
+  if (FLAG_perf_prof) return;
   PageAllocator* allocator = GetPlatformPageAllocator();
   DCHECK(IsAligned(region.begin(), allocator->CommitPageSize()));
   DCHECK(IsAligned(region.size(), allocator->CommitPageSize()));
   size_t old_committed = total_committed_code_space_.fetch_sub(region.size());
   DCHECK_LE(region.size(), old_committed);
   USE(old_committed);
-  TRACE_HEAP("Discarding system pages 0x%" PRIxPTR ":0x%" PRIxPTR "\n",
+  TRACE_HEAP("Decommitting system pages 0x%" PRIxPTR ":0x%" PRIxPTR "\n",
              region.begin(), region.end());
-  if (FLAG_wasm_memory_protection_keys) {
-    CHECK(SetPermissionsAndMemoryProtectionKey(
-        allocator, region, PageAllocator::kNoAccess, kNoMemoryProtectionKey));
-  } else {
-    CHECK(SetPermissions(allocator, region.begin(), region.size(),
-                         PageAllocator::kNoAccess));
-  }
+  CHECK(allocator->DecommitPages(reinterpret_cast<void*>(region.begin()),
+                                 region.size()));
 }
 
 void WasmCodeManager::AssignRange(base::AddressRegion region,
@@ -1821,7 +1993,6 @@ VirtualMemory WasmCodeManager::TryAllocate(size_t size, void* hint) {
   DCHECK_GT(size, 0);
   size_t allocate_page_size = page_allocator->AllocatePageSize();
   size = RoundUp(size, allocate_page_size);
-  if (!BackingStore::ReserveAddressSpace(size)) return {};
   if (hint == nullptr) hint = page_allocator->GetRandomMmapAddr();
 
   // When we start exposing Wasm in jitless mode, then the jitless flag
@@ -1829,10 +2000,7 @@ VirtualMemory WasmCodeManager::TryAllocate(size_t size, void* hint) {
   DCHECK(!FLAG_jitless);
   VirtualMemory mem(page_allocator, size, hint, allocate_page_size,
                     VirtualMemory::kMapAsJittable);
-  if (!mem.IsReserved()) {
-    BackingStore::ReleaseReservation(size);
-    return {};
-  }
+  if (!mem.IsReserved()) return {};
   TRACE_HEAP("VMem alloc: 0x%" PRIxPTR ":0x%" PRIxPTR " (%zu)\n", mem.address(),
              mem.end(), mem.size());
 
@@ -1852,47 +2020,43 @@ namespace {
 // separate code spaces being allocated (compile time and runtime overhead),
 // choosing them too large results in over-reservation (virtual address space
 // only).
-// The current numbers have been determined on 2019-11-11 by clemensb@, based
-// on one small and one large module compiled from C++ by Emscripten. If in
-// doubt, they where chosen slightly larger than required, as over-reservation
-// is not a big issue currently.
-// Numbers will change when Liftoff or TurboFan evolve, other toolchains are
-// used to produce the wasm code, or characteristics of wasm modules on the
-// web change. They might require occasional tuning.
-// This patch might help to find reasonable numbers for any future adaptation:
-// https://crrev.com/c/1910945
+// In doubt, choose the numbers slightly too large, because over-reservation is
+// less critical than multiple separate code spaces (especially on 64-bit).
+// Numbers can be determined by running benchmarks with
+// --trace-wasm-compilation-times, and piping the output through
+// tools/wasm/code-size-factors.py.
 #if V8_TARGET_ARCH_X64
-constexpr size_t kTurbofanFunctionOverhead = 20;
+constexpr size_t kTurbofanFunctionOverhead = 24;
 constexpr size_t kTurbofanCodeSizeMultiplier = 3;
-constexpr size_t kLiftoffFunctionOverhead = 60;
+constexpr size_t kLiftoffFunctionOverhead = 56;
 constexpr size_t kLiftoffCodeSizeMultiplier = 4;
-constexpr size_t kImportSize = 350;
+constexpr size_t kImportSize = 640;
 #elif V8_TARGET_ARCH_IA32
 constexpr size_t kTurbofanFunctionOverhead = 20;
 constexpr size_t kTurbofanCodeSizeMultiplier = 4;
-constexpr size_t kLiftoffFunctionOverhead = 60;
+constexpr size_t kLiftoffFunctionOverhead = 48;
 constexpr size_t kLiftoffCodeSizeMultiplier = 5;
-constexpr size_t kImportSize = 480;
+constexpr size_t kImportSize = 320;
 #elif V8_TARGET_ARCH_ARM
-constexpr size_t kTurbofanFunctionOverhead = 40;
+constexpr size_t kTurbofanFunctionOverhead = 44;
 constexpr size_t kTurbofanCodeSizeMultiplier = 4;
-constexpr size_t kLiftoffFunctionOverhead = 108;
-constexpr size_t kLiftoffCodeSizeMultiplier = 7;
-constexpr size_t kImportSize = 750;
+constexpr size_t kLiftoffFunctionOverhead = 96;
+constexpr size_t kLiftoffCodeSizeMultiplier = 5;
+constexpr size_t kImportSize = 550;
 #elif V8_TARGET_ARCH_ARM64
-constexpr size_t kTurbofanFunctionOverhead = 60;
-constexpr size_t kTurbofanCodeSizeMultiplier = 4;
-constexpr size_t kLiftoffFunctionOverhead = 80;
-constexpr size_t kLiftoffCodeSizeMultiplier = 7;
+constexpr size_t kTurbofanFunctionOverhead = 40;
+constexpr size_t kTurbofanCodeSizeMultiplier = 3;
+constexpr size_t kLiftoffFunctionOverhead = 68;
+constexpr size_t kLiftoffCodeSizeMultiplier = 4;
 constexpr size_t kImportSize = 750;
 #else
-// Other platforms should add their own estimates if needed. Numbers below are
-// the minimum of other architectures.
-constexpr size_t kTurbofanFunctionOverhead = 20;
-constexpr size_t kTurbofanCodeSizeMultiplier = 3;
-constexpr size_t kLiftoffFunctionOverhead = 60;
-constexpr size_t kLiftoffCodeSizeMultiplier = 4;
-constexpr size_t kImportSize = 350;
+// Other platforms should add their own estimates for best performance. Numbers
+// below are the maximum of other architectures.
+constexpr size_t kTurbofanFunctionOverhead = 44;
+constexpr size_t kTurbofanCodeSizeMultiplier = 4;
+constexpr size_t kLiftoffFunctionOverhead = 96;
+constexpr size_t kLiftoffCodeSizeMultiplier = 5;
+constexpr size_t kImportSize = 750;
 #endif
 }  // namespace
 
@@ -1903,8 +2067,9 @@ size_t WasmCodeManager::EstimateLiftoffCodeSize(int body_size) {
 }
 
 // static
-size_t WasmCodeManager::EstimateNativeModuleCodeSize(const WasmModule* module,
-                                                     bool include_liftoff) {
+size_t WasmCodeManager::EstimateNativeModuleCodeSize(
+    const WasmModule* module, bool include_liftoff,
+    DynamicTiering dynamic_tiering) {
   int num_functions = static_cast<int>(module->num_declared_functions);
   int num_imported_functions = static_cast<int>(module->num_imported_functions);
   int code_section_length = 0;
@@ -1916,31 +2081,40 @@ size_t WasmCodeManager::EstimateNativeModuleCodeSize(const WasmModule* module,
         static_cast<int>(last_fn->code.end_offset() - first_fn->code.offset());
   }
   return EstimateNativeModuleCodeSize(num_functions, num_imported_functions,
-                                      code_section_length, include_liftoff);
+                                      code_section_length, include_liftoff,
+                                      dynamic_tiering);
 }
 
 // static
-size_t WasmCodeManager::EstimateNativeModuleCodeSize(int num_functions,
-                                                     int num_imported_functions,
-                                                     int code_section_length,
-                                                     bool include_liftoff) {
-  const size_t overhead_per_function =
-      kTurbofanFunctionOverhead + kCodeAlignment / 2 +
-      (include_liftoff ? kLiftoffFunctionOverhead + kCodeAlignment / 2 : 0);
-  const size_t overhead_per_code_byte =
-      kTurbofanCodeSizeMultiplier +
-      (include_liftoff ? kLiftoffCodeSizeMultiplier : 0);
-  const size_t jump_table_size = RoundUp<kCodeAlignment>(
-      JumpTableAssembler::SizeForNumberOfSlots(num_functions));
-  const size_t far_jump_table_size =
-      RoundUp<kCodeAlignment>(JumpTableAssembler::SizeForNumberOfFarJumpSlots(
-          WasmCode::kRuntimeStubCount,
-          NumWasmFunctionsInFarJumpTable(num_functions)));
-  return jump_table_size                                 // jump table
-         + far_jump_table_size                           // far jump table
-         + overhead_per_function * num_functions         // per function
-         + overhead_per_code_byte * code_section_length  // per code byte
-         + kImportSize * num_imported_functions;         // per import
+size_t WasmCodeManager::EstimateNativeModuleCodeSize(
+    int num_functions, int num_imported_functions, int code_section_length,
+    bool include_liftoff, DynamicTiering dynamic_tiering) {
+  // Note that the size for jump tables is added later, in {ReservationSize} /
+  // {OverheadPerCodeSpace}.
+
+  const size_t size_of_imports = kImportSize * num_imported_functions;
+
+  const size_t overhead_per_function_turbofan =
+      kTurbofanFunctionOverhead + kCodeAlignment / 2;
+  size_t size_of_turbofan = overhead_per_function_turbofan * num_functions +
+                            kTurbofanCodeSizeMultiplier * code_section_length;
+
+  const size_t overhead_per_function_liftoff =
+      kLiftoffFunctionOverhead + kCodeAlignment / 2;
+  size_t size_of_liftoff = overhead_per_function_liftoff * num_functions +
+                           kLiftoffCodeSizeMultiplier * code_section_length;
+
+  if (!include_liftoff) {
+    size_of_liftoff = 0;
+  }
+  // With dynamic tiering we don't expect to compile more than 25% with
+  // TurboFan. If there is no liftoff though then all code will get generated
+  // by TurboFan.
+  if (include_liftoff && dynamic_tiering == DynamicTiering::kEnabled) {
+    size_of_turbofan /= 4;
+  }
+
+  return size_of_imports + size_of_liftoff + size_of_turbofan;
 }
 
 // static
@@ -1952,17 +2126,65 @@ size_t WasmCodeManager::EstimateNativeModuleMetaDataSize(
 
   // TODO(wasm): Include wire bytes size.
   size_t native_module_estimate =
-      sizeof(NativeModule) +                     /* NativeModule struct */
-      (sizeof(WasmCode*) * num_wasm_functions) + /* code table size */
-      (sizeof(WasmCode) * num_wasm_functions);   /* code object size */
+      sizeof(NativeModule) +                      // NativeModule struct
+      (sizeof(WasmCode*) * num_wasm_functions) +  // code table size
+      (sizeof(WasmCode) * num_wasm_functions);    // code object size
 
-  return wasm_module_estimate + native_module_estimate;
+  size_t jump_table_size = RoundUp<kCodeAlignment>(
+      JumpTableAssembler::SizeForNumberOfSlots(num_wasm_functions));
+  size_t far_jump_table_size =
+      RoundUp<kCodeAlignment>(JumpTableAssembler::SizeForNumberOfFarJumpSlots(
+          WasmCode::kRuntimeStubCount,
+          NumWasmFunctionsInFarJumpTable(num_wasm_functions)));
+
+  return wasm_module_estimate + native_module_estimate + jump_table_size +
+         far_jump_table_size;
+}
+
+void WasmCodeManager::SetThreadWritable(bool writable) {
+  DCHECK(MemoryProtectionKeysEnabled());
+
+  MemoryProtectionKeyPermission permissions =
+      writable ? kNoRestrictions : kDisableWrite;
+
+  // When switching to writable we should not already be writable. Otherwise
+  // this points at a problem with counting writers, or with wrong
+  // initialization (globally or per thread).
+  DCHECK_IMPLIES(writable, !MemoryProtectionKeyWritable());
+
+  TRACE_HEAP("Setting memory protection key %d to writable: %d.\n",
+             memory_protection_key_, writable);
+  SetPermissionsForMemoryProtectionKey(memory_protection_key_, permissions);
+}
+
+bool WasmCodeManager::HasMemoryProtectionKeySupport() const {
+  return memory_protection_key_ != kNoMemoryProtectionKey;
+}
+
+bool WasmCodeManager::MemoryProtectionKeysEnabled() const {
+  return HasMemoryProtectionKeySupport() && FLAG_wasm_memory_protection_keys;
+}
+
+bool WasmCodeManager::MemoryProtectionKeyWritable() const {
+  return GetMemoryProtectionKeyPermission(memory_protection_key_) ==
+         MemoryProtectionKeyPermission::kNoRestrictions;
+}
+
+void WasmCodeManager::InitializeMemoryProtectionKeyPermissionsIfSupported()
+    const {
+  if (!HasMemoryProtectionKeySupport()) return;
+  // The default permission is {kDisableAccess}. Switch from that to
+  // {kDisableWrite}. Leave other permissions untouched, as the thread did
+  // already use the memory protection key in that case.
+  if (GetMemoryProtectionKeyPermission(memory_protection_key_) ==
+      kDisableAccess) {
+    SetPermissionsForMemoryProtectionKey(memory_protection_key_, kDisableWrite);
+  }
 }
 
 std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
-    WasmEngine* engine, Isolate* isolate, const WasmFeatures& enabled,
-    size_t code_size_estimate, std::shared_ptr<const WasmModule> module) {
-  DCHECK_EQ(this, isolate->wasm_engine()->code_manager());
+    Isolate* isolate, const WasmFeatures& enabled, size_t code_size_estimate,
+    std::shared_ptr<const WasmModule> module) {
   if (total_committed_code_space_.load() >
       critical_committed_code_space_.load()) {
     (reinterpret_cast<v8::Isolate*>(isolate))
@@ -1973,12 +2195,11 @@ std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
         committed + (max_committed_code_space_ - committed) / 2);
   }
 
-  // If we cannot add code space later, reserve enough address space up front.
   size_t code_vmem_size =
       ReservationSize(code_size_estimate, module->num_declared_functions, 0);
 
-  // The '--wasm-max-code-space-reservation' testing flag can be used to reduce
-  // the maximum size of the initial code space reservation (in MB).
+  // The '--wasm-max-initial-code-space-reservation' testing flag can be used to
+  // reduce the maximum size of the initial code space reservation (in MB).
   if (FLAG_wasm_max_initial_code_space_reservation > 0) {
     size_t flag_max_bytes =
         static_cast<size_t>(FLAG_wasm_max_initial_code_space_reservation) * MB;
@@ -1994,7 +2215,13 @@ std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
     code_space = TryAllocate(code_vmem_size);
     if (code_space.IsReserved()) break;
     if (retries == kAllocationRetries) {
-      V8::FatalProcessOutOfMemory(isolate, "NewNativeModule");
+      constexpr auto format = base::StaticCharVector(
+          "NewNativeModule cannot allocate code space of %zu bytes");
+      constexpr int kMaxMessageLength =
+          format.size() - 3 + std::numeric_limits<size_t>::digits10;
+      base::EmbeddedVector<char, kMaxMessageLength + 1> message;
+      SNPrintF(message, format.begin(), code_vmem_size);
+      V8::FatalProcessOutOfMemory(isolate, message.begin());
       UNREACHABLE();
     }
     // Run one GC, then try the allocation again.
@@ -2006,12 +2233,15 @@ std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
   size_t size = code_space.size();
   Address end = code_space.end();
   std::shared_ptr<NativeModule> ret;
-  new NativeModule(engine, enabled, std::move(code_space), std::move(module),
-                   isolate->async_counters(), &ret);
+  DynamicTiering dynamic_tiering = isolate->IsWasmDynamicTieringEnabled()
+                                       ? DynamicTiering::kEnabled
+                                       : DynamicTiering::kDisabled;
+  new NativeModule(enabled, dynamic_tiering, std::move(code_space),
+                   std::move(module), isolate->async_counters(), &ret);
   // The constructor initialized the shared_ptr.
   DCHECK_NOT_NULL(ret);
-  TRACE_HEAP("New NativeModule %p: Mem: %" PRIuPTR ",+%zu\n", ret.get(), start,
-             size);
+  TRACE_HEAP("New NativeModule %p: Mem: 0x%" PRIxPTR ",+%zu\n", ret.get(),
+             start, size);
 
   base::MutexGuard lock(&native_modules_mutex_);
   lookup_map_.insert(std::make_pair(start, std::make_pair(end, ret.get())));
@@ -2058,7 +2288,7 @@ std::unique_ptr<WasmCode> NativeModule::AddCompiledCode(
 }
 
 std::vector<std::unique_ptr<WasmCode>> NativeModule::AddCompiledCode(
-    Vector<WasmCompilationResult> results) {
+    base::Vector<WasmCompilationResult> results) {
   TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("v8.wasm.detailed"),
                "wasm.AddCompiledCode", "num", results.size());
   DCHECK(!results.empty());
@@ -2067,9 +2297,20 @@ std::vector<std::unique_ptr<WasmCode>> NativeModule::AddCompiledCode(
   for (auto& result : results) {
     DCHECK(result.succeeded());
     total_code_space += RoundUp<kCodeAlignment>(result.code_desc.instr_size);
+    if (result.result_tier == ExecutionTier::kLiftoff) {
+      int index = result.func_index;
+      int* slots = &module()->functions[index].feedback_slots;
+#if DEBUG
+      int current_value = base::Relaxed_Load(slots);
+      DCHECK(current_value == 0 ||
+             current_value == result.feedback_vector_slots);
+#endif
+      base::Relaxed_Store(slots, result.feedback_vector_slots);
+    }
   }
-  Vector<byte> code_space;
+  base::Vector<byte> code_space;
   NativeModule::JumpTablesRef jump_tables;
+  CodeSpaceWriteScope code_space_write_scope(this);
   {
     base::RecursiveMutexGuard guard{&allocation_mutex_};
     code_space = code_allocator_.AllocateForCode(this, total_code_space);
@@ -2087,12 +2328,10 @@ std::vector<std::unique_ptr<WasmCode>> NativeModule::AddCompiledCode(
   generated_code.reserve(results.size());
 
   // Now copy the generated code into the code space and relocate it.
-  CODE_SPACE_WRITE_SCOPE
-  NativeModuleModificationScope native_module_modification_scope(this);
   for (auto& result : results) {
-    DCHECK_EQ(result.code_desc.buffer, result.instr_buffer.get());
+    DCHECK_EQ(result.code_desc.buffer, result.instr_buffer->start());
     size_t code_size = RoundUp<kCodeAlignment>(result.code_desc.instr_size);
-    Vector<byte> this_code_space = code_space.SubVector(0, code_size);
+    base::Vector<byte> this_code_space = code_space.SubVector(0, code_size);
     code_space += code_size;
     generated_code.emplace_back(AddCodeWithCodeSpace(
         result.func_index, result.code_desc, result.frame_slot_count,
@@ -2121,6 +2360,11 @@ bool NativeModule::IsTieredDown() {
 }
 
 void NativeModule::RecompileForTiering() {
+  // If baseline compilation is not finished yet, we do not tier down now. This
+  // would be tricky because not all code is guaranteed to be available yet.
+  // Instead, we tier down after streaming compilation finished.
+  if (!compilation_state_->baseline_compilation_finished()) return;
+
   // Read the tiering state under the lock, then trigger recompilation after
   // releasing the lock. If the tiering state was changed when the triggered
   // compilation units finish, code installation will handle that correctly.
@@ -2147,6 +2391,9 @@ std::vector<int> NativeModule::FindFunctionsToRecompile(
     TieringState new_tiering_state) {
   WasmCodeRefScope code_ref_scope;
   base::RecursiveMutexGuard guard(&allocation_mutex_);
+  // Get writable permission already here (and not inside the loop in
+  // {PatchJumpTablesLocked}), to avoid switching for each slot individually.
+  CodeSpaceWriteScope code_space_write_scope(this);
   std::vector<int> function_indexes;
   int imported = module()->num_imported_functions;
   int declared = module()->num_declared_functions;
@@ -2181,7 +2428,7 @@ std::vector<int> NativeModule::FindFunctionsToRecompile(
   return function_indexes;
 }
 
-void NativeModule::FreeCode(Vector<WasmCode* const> codes) {
+void NativeModule::FreeCode(base::Vector<WasmCode* const> codes) {
   base::RecursiveMutexGuard guard(&allocation_mutex_);
   // Free the code space.
   code_allocator_.FreeCode(codes);
@@ -2214,8 +2461,8 @@ DebugInfo* NativeModule::GetDebugInfo() {
   return debug_info_.get();
 }
 
-void WasmCodeManager::FreeNativeModule(Vector<VirtualMemory> owned_code_space,
-                                       size_t committed_size) {
+void WasmCodeManager::FreeNativeModule(
+    base::Vector<VirtualMemory> owned_code_space, size_t committed_size) {
   base::MutexGuard lock(&native_modules_mutex_);
   for (auto& code_space : owned_code_space) {
     DCHECK(code_space.IsReserved());
@@ -2230,7 +2477,6 @@ void WasmCodeManager::FreeNativeModule(Vector<VirtualMemory> owned_code_space,
 #endif  // V8_OS_WIN64
 
     lookup_map_.erase(code_space.address());
-    BackingStore::ReleaseReservation(code_space.size());
     code_space.Free();
     DCHECK(!code_space.IsReserved());
   }
@@ -2265,39 +2511,6 @@ WasmCode* WasmCodeManager::LookupCode(Address pc) const {
   return candidate ? candidate->Lookup(pc) : nullptr;
 }
 
-// TODO(v8:7424): Code protection scopes are not yet supported with shared code
-// enabled and need to be revisited.
-NativeModuleModificationScope::NativeModuleModificationScope(
-    NativeModule* native_module)
-    : native_module_(native_module) {
-  DCHECK_NOT_NULL(native_module_);
-  if (FLAG_wasm_memory_protection_keys) {
-    bool success = native_module_->SetThreadWritable(true);
-    if (!success && FLAG_wasm_write_protect_code_memory) {
-      // Fallback to mprotect-based write protection (much slower).
-      success = native_module_->SetWritable(true);
-      CHECK(success);
-    }
-  } else if (FLAG_wasm_write_protect_code_memory) {
-    bool success = native_module_->SetWritable(true);
-    CHECK(success);
-  }
-}
-
-NativeModuleModificationScope::~NativeModuleModificationScope() {
-  if (FLAG_wasm_memory_protection_keys) {
-    bool success = native_module_->SetThreadWritable(false);
-    if (!success && FLAG_wasm_write_protect_code_memory) {
-      // Fallback to mprotect-based write protection (much slower).
-      success = native_module_->SetWritable(false);
-      CHECK(success);
-    }
-  } else if (FLAG_wasm_write_protect_code_memory) {
-    bool success = native_module_->SetWritable(false);
-    CHECK(success);
-  }
-}
-
 namespace {
 thread_local WasmCodeRefScope* current_code_refs_scope = nullptr;
 }  // namespace
@@ -2310,7 +2523,7 @@ WasmCodeRefScope::WasmCodeRefScope()
 WasmCodeRefScope::~WasmCodeRefScope() {
   DCHECK_EQ(this, current_code_refs_scope);
   current_code_refs_scope = previous_scope_;
-  WasmCode::DecrementRefCount(VectorOf(code_ptrs_));
+  WasmCode::DecrementRefCount(base::VectorOf(code_ptrs_));
 }
 
 // static
@@ -2322,10 +2535,10 @@ void WasmCodeRefScope::AddRef(WasmCode* code) {
   code->IncRef();
 }
 
-Builtins::Name RuntimeStubIdToBuiltinName(WasmCode::RuntimeStubId stub_id) {
-#define RUNTIME_STUB_NAME(Name) Builtins::k##Name,
-#define RUNTIME_STUB_NAME_TRAP(Name) Builtins::kThrowWasm##Name,
-  constexpr Builtins::Name builtin_names[] = {
+Builtin RuntimeStubIdToBuiltinName(WasmCode::RuntimeStubId stub_id) {
+#define RUNTIME_STUB_NAME(Name) Builtin::k##Name,
+#define RUNTIME_STUB_NAME_TRAP(Name) Builtin::kThrowWasm##Name,
+  constexpr Builtin builtin_names[] = {
       WASM_RUNTIME_STUB_LIST(RUNTIME_STUB_NAME, RUNTIME_STUB_NAME_TRAP)};
 #undef RUNTIME_STUB_NAME
 #undef RUNTIME_STUB_NAME_TRAP

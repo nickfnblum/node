@@ -56,7 +56,9 @@ std::unique_ptr<protocol::DictionaryValue> ParseState(StringView state) {
   if (!cbor.empty()) {
     std::unique_ptr<protocol::Value> value =
         protocol::Value::parseBinary(cbor.data(), cbor.size());
-    if (value) return protocol::DictionaryValue::cast(std::move(value));
+    std::unique_ptr<protocol::DictionaryValue> dictionaryValue =
+        protocol::DictionaryValue::cast(std::move(value));
+    if (dictionaryValue) return dictionaryValue;
   }
   return protocol::DictionaryValue::create();
 }
@@ -496,8 +498,8 @@ V8InspectorSessionImpl::searchInTextByLines(StringView text, StringView query,
 }
 
 void V8InspectorSessionImpl::triggerPreciseCoverageDeltaUpdate(
-    StringView occassion) {
-  m_profilerAgent->triggerPreciseCoverageDeltaUpdate(toString16(occassion));
+    StringView occasion) {
+  m_profilerAgent->triggerPreciseCoverageDeltaUpdate(toString16(occasion));
 }
 
 }  // namespace v8_inspector

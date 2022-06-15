@@ -7,6 +7,8 @@
 #include "src/execution/isolate.h"
 #include "src/heap/factory.h"
 #include "src/heap/heap-inl.h"
+#include "src/ic/handler-configuration.h"
+#include "src/objects/data-handler-inl.h"
 #include "src/objects/smi.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/heap/heap-tester.h"
@@ -38,8 +40,7 @@ TEST(WeakReferencesBasic) {
   MaybeObject code_object = lh->data1();
   CHECK(code_object->IsSmi());
   CcTest::CollectAllGarbage();
-  CHECK(FLAG_always_promote_young_mc ? !Heap::InYoungGeneration(*lh)
-                                     : Heap::InYoungGeneration(*lh));
+  CHECK(!Heap::InYoungGeneration(*lh));
   CHECK_EQ(code_object, lh->data1());
 
   {
@@ -50,9 +51,10 @@ TEST(WeakReferencesBasic) {
     assm.nop();  // supported on all architectures
     CodeDesc desc;
     assm.GetCode(isolate, &desc);
-    Handle<Code> code =
-        Factory::CodeBuilder(isolate, desc, CodeKind::FOR_TESTING).Build();
-    CHECK(code->IsCode());
+    Handle<CodeT> code = ToCodeT(
+        Factory::CodeBuilder(isolate, desc, CodeKind::FOR_TESTING).Build(),
+        isolate);
+    CHECK(code->IsCodeT());
 
     lh->set_data1(HeapObjectReference::Weak(*code));
     HeapObject code_heap_object;
@@ -174,7 +176,8 @@ TEST(WeakReferencesOldToCleared) {
 }
 
 TEST(ObjectMovesBeforeClearingWeakField) {
-  if (!FLAG_incremental_marking || FLAG_single_generation) {
+  if (!FLAG_incremental_marking || FLAG_single_generation ||
+      FLAG_separate_gc_phases) {
     return;
   }
   ManualGCScope manual_gc_scope;
@@ -275,7 +278,7 @@ TEST(ObjectWithWeakReferencePromoted) {
 }
 
 TEST(ObjectWithClearedWeakReferencePromoted) {
-  if (FLAG_single_generation) return;
+  if (FLAG_single_generation || FLAG_stress_incremental_marking) return;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   Factory* factory = isolate->factory();

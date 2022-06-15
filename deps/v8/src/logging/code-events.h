@@ -8,12 +8,12 @@
 #include <unordered_set>
 
 #include "src/base/platform/mutex.h"
+#include "src/base/vector.h"
 #include "src/common/globals.h"
 #include "src/objects/code.h"
 #include "src/objects/name.h"
 #include "src/objects/shared-function-info.h"
 #include "src/objects/string.h"
-#include "src/utils/vector.h"
 
 namespace v8 {
 namespace internal {
@@ -25,7 +25,7 @@ class String;
 
 namespace wasm {
 class WasmCode;
-using WasmName = Vector<const char>;
+using WasmName = base::Vector<const char>;
 }  // namespace wasm
 
 // clang-format off
@@ -103,8 +103,7 @@ class CodeEventListener {
   virtual void CodeDisableOptEvent(Handle<AbstractCode> code,
                                    Handle<SharedFunctionInfo> shared) = 0;
   virtual void CodeDeoptEvent(Handle<Code> code, DeoptimizeKind kind,
-                              Address pc, int fp_to_sp_delta,
-                              bool reuse_code) = 0;
+                              Address pc, int fp_to_sp_delta) = 0;
   // These events can happen when 1. an assumption made by optimized code fails
   // or 2. a weakly embedded object dies.
   virtual void CodeDependencyChangeEvent(Handle<Code> code,
@@ -234,9 +233,9 @@ class CodeEventDispatcher : public CodeEventListener {
     });
   }
   void CodeDeoptEvent(Handle<Code> code, DeoptimizeKind kind, Address pc,
-                      int fp_to_sp_delta, bool reuse_code) override {
+                      int fp_to_sp_delta) override {
     DispatchEventToListeners([=](CodeEventListener* listener) {
-      listener->CodeDeoptEvent(code, kind, pc, fp_to_sp_delta, reuse_code);
+      listener->CodeDeoptEvent(code, kind, pc, fp_to_sp_delta);
     });
   }
   void CodeDependencyChangeEvent(Handle<Code> code,

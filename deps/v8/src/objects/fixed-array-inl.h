@@ -5,14 +5,12 @@
 #ifndef V8_OBJECTS_FIXED_ARRAY_INL_H_
 #define V8_OBJECTS_FIXED_ARRAY_INL_H_
 
-#include "src/objects/fixed-array.h"
-
 #include "src/handles/handles-inl.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/numbers/conversions.h"
 #include "src/objects/bigint.h"
 #include "src/objects/compressed-slots.h"
-#include "src/objects/heap-number-inl.h"
+#include "src/objects/fixed-array.h"
 #include "src/objects/map.h"
 #include "src/objects/maybe-object-inl.h"
 #include "src/objects/objects-inl.h"
@@ -85,7 +83,7 @@ bool FixedArray::is_the_hole(Isolate* isolate, int index) {
   return get(isolate, index).IsTheHole(isolate);
 }
 
-#if !defined(_WIN32) || defined(_WIN64)
+#if !defined(_WIN32) || (defined(_WIN64) && _MSC_VER < 1930 && __cplusplus < 201703L)
 void FixedArray::set(int index, Smi value) {
   DCHECK_NE(map(), GetReadOnlyRoots().fixed_cow_array_map());
   DCHECK_LT(static_cast<unsigned>(index), static_cast<unsigned>(length()));
@@ -447,6 +445,16 @@ void WeakFixedArray::Set(int index, MaybeObject value, WriteBarrierMode mode) {
   set_objects(index, value, mode);
 }
 
+Handle<WeakFixedArray> WeakFixedArray::EnsureSpace(Isolate* isolate,
+                                                   Handle<WeakFixedArray> array,
+                                                   int length) {
+  if (array->length() < length) {
+    int grow_by = length - array->length();
+    array = isolate->factory()->CopyWeakFixedArrayAndGrow(array, grow_by);
+  }
+  return array;
+}
+
 MaybeObjectSlot WeakFixedArray::data_start() {
   return RawMaybeWeakField(kObjectsOffset);
 }
@@ -480,6 +488,10 @@ MaybeObject WeakArrayList::Get(PtrComprCageBase cage_base, int index) const {
 
 void WeakArrayList::Set(int index, MaybeObject value, WriteBarrierMode mode) {
   set_objects(index, value, mode);
+}
+
+void WeakArrayList::Set(int index, Smi value) {
+  Set(index, MaybeObject::FromSmi(value), SKIP_WRITE_BARRIER);
 }
 
 MaybeObjectSlot WeakArrayList::data_start() {
@@ -536,6 +548,10 @@ void ArrayList::Set(int index, Object obj, WriteBarrierMode mode) {
   FixedArray::cast(*this).set(kFirstIndex + index, obj, mode);
 }
 
+void ArrayList::Set(int index, Smi value) {
+  DCHECK(Object(value).IsSmi());
+  Set(index, value, SKIP_WRITE_BARRIER);
+}
 void ArrayList::Clear(int index, Object undefined) {
   DCHECK(undefined.IsUndefined());
   FixedArray::cast(*this).set(kFirstIndex + index, undefined,
@@ -545,57 +561,81 @@ void ArrayList::Clear(int index, Object undefined) {
 int ByteArray::Size() { return RoundUp(length() + kHeaderSize, kTaggedSize); }
 
 byte ByteArray::get(int index) const {
-  DCHECK(index >= 0 && index < this->length());
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length());
   return ReadField<byte>(kHeaderSize + index * kCharSize);
 }
 
 void ByteArray::set(int index, byte value) {
-  DCHECK(index >= 0 && index < this->length());
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length());
   WriteField<byte>(kHeaderSize + index * kCharSize, value);
 }
 
-void ByteArray::copy_in(int index, const byte* buffer, int length) {
-  DCHECK(index >= 0 && length >= 0 && length <= kMaxInt - index &&
-         index + length <= this->length());
+void ByteArray::copy_in(int index, const byte* buffer, int slice_length) {
+  DCHECK_GE(index, 0);
+  DCHECK_GE(slice_length, 0);
+  DCHECK_LE(slice_length, kMaxInt - index);
+  DCHECK_LE(index + slice_length, length());
   Address dst_addr = field_address(kHeaderSize + index * kCharSize);
-  base::Memcpy(reinterpret_cast<void*>(dst_addr), buffer, length);
+  memcpy(reinterpret_cast<void*>(dst_addr), buffer, slice_length);
 }
 
-void ByteArray::copy_out(int index, byte* buffer, int length) {
-  DCHECK(index >= 0 && length >= 0 && length <= kMaxInt - index &&
-         index + length <= this->length());
+void ByteArray::copy_out(int index, byte* buffer, int slice_length) {
+  DCHECK_GE(index, 0);
+  DCHECK_GE(slice_length, 0);
+  DCHECK_LE(slice_length, kMaxInt - index);
+  DCHECK_LE(index + slice_length, length());
   Address src_addr = field_address(kHeaderSize + index * kCharSize);
-  base::Memcpy(buffer, reinterpret_cast<void*>(src_addr), length);
+  memcpy(buffer, reinterpret_cast<void*>(src_addr), slice_length);
 }
 
 int ByteArray::get_int(int index) const {
-  DCHECK(index >= 0 && index < this->length() / kIntSize);
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kIntSize);
   return ReadField<int>(kHeaderSize + index * kIntSize);
 }
 
 void ByteArray::set_int(int index, int value) {
-  DCHECK(index >= 0 && index < this->length() / kIntSize);
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kIntSize);
   WriteField<int>(kHeaderSize + index * kIntSize, value);
 }
 
 uint32_t ByteArray::get_uint32(int index) const {
-  DCHECK(index >= 0 && index < this->length() / kUInt32Size);
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kUInt32Size);
   return ReadField<uint32_t>(kHeaderSize + index * kUInt32Size);
 }
 
 void ByteArray::set_uint32(int index, uint32_t value) {
-  DCHECK(index >= 0 && index < this->length() / kUInt32Size);
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kUInt32Size);
   WriteField<uint32_t>(kHeaderSize + index * kUInt32Size, value);
 }
 
 uint32_t ByteArray::get_uint32_relaxed(int index) const {
-  DCHECK(index >= 0 && index < this->length() / kUInt32Size);
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kUInt32Size);
   return RELAXED_READ_UINT32_FIELD(*this, kHeaderSize + index * kUInt32Size);
 }
 
 void ByteArray::set_uint32_relaxed(int index, uint32_t value) {
-  DCHECK(index >= 0 && index < this->length() / kUInt32Size);
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kUInt32Size);
   RELAXED_WRITE_UINT32_FIELD(*this, kHeaderSize + index * kUInt32Size, value);
+}
+
+uint16_t ByteArray::get_uint16(int index) const {
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kUInt16Size);
+  return ReadField<uint16_t>(kHeaderSize + index * kUInt16Size);
+}
+
+void ByteArray::set_uint16(int index, uint16_t value) {
+  DCHECK_GE(index, 0);
+  DCHECK_LT(index, length() / kUInt16Size);
+  WriteField<uint16_t>(kHeaderSize + index * kUInt16Size, value);
 }
 
 void ByteArray::clear_padding() {
@@ -610,7 +650,7 @@ ByteArray ByteArray::FromDataStartAddress(Address address) {
 
 int ByteArray::DataSize() const { return RoundUp(length(), kTaggedSize); }
 
-int ByteArray::ByteArraySize() { return SizeFor(this->length()); }
+int ByteArray::ByteArraySize() { return SizeFor(length()); }
 
 byte* ByteArray::GetDataStartAddress() {
   return reinterpret_cast<byte*>(address() + kHeaderSize);

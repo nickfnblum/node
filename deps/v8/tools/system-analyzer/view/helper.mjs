@@ -17,6 +17,7 @@ export class CSSColor {
     this._cache.set(name, color);
     return color;
   }
+
   static reset() {
     this._cache.clear();
   }
@@ -82,7 +83,7 @@ export class CSSColor {
     return this.list[index % this.list.length];
   }
 
-  static darken(hexColorString, amount = -40) {
+  static darken(hexColorString, amount = -50) {
     if (hexColorString[0] !== '#') {
       throw new Error(`Unsupported color: ${hexColorString}`);
     }
@@ -121,67 +122,26 @@ export class CSSColor {
   }
 }
 
-export class DOM {
+import {DOM} from '../../js/web-api-helper.mjs';
+
+const SVGNamespace = 'http://www.w3.org/2000/svg';
+export class SVG {
   static element(type, classes) {
-    const node = document.createElement(type);
-    if (classes === undefined) return node;
-    if (typeof classes === 'string') {
-      node.className = classes;
-    } else {
-      classes.forEach(cls => node.classList.add(cls));
-    }
+    const node = document.createElementNS(SVGNamespace, type);
+    if (classes !== undefined) DOM.addClasses(node, classes);
     return node;
   }
 
-  static text(string) {
-    return document.createTextNode(string);
+  static svg(classes) {
+    return this.element('svg', classes);
   }
 
-  static div(classes) {
-    return this.element('div', classes);
+  static rect(classes) {
+    return this.element('rect', classes);
   }
 
-  static span(classes) {
-    return this.element('span', classes);
-  }
-
-  static table(classes) {
-    return this.element('table', classes);
-  }
-
-  static tbody(classes) {
-    return this.element('tbody', classes);
-  }
-
-  static td(textOrNode, className) {
-    const node = this.element('td');
-    if (typeof textOrNode === 'object') {
-      node.appendChild(textOrNode);
-    } else if (textOrNode) {
-      node.innerText = textOrNode;
-    }
-    if (className) node.className = className;
-    return node;
-  }
-
-  static tr(classes) {
-    return this.element('tr', classes);
-  }
-
-  static removeAllChildren(node) {
-    let range = document.createRange();
-    range.selectNodeContents(node);
-    range.deleteContents();
-  }
-
-  static defineCustomElement(path, generator) {
-    let name = path.substring(path.lastIndexOf('/') + 1, path.length);
-    path = path + '-template.html';
-    fetch(path)
-        .then(stream => stream.text())
-        .then(
-            templateText =>
-                customElements.define(name, generator(templateText)));
+  static g(classes) {
+    return this.element('g', classes);
   }
 }
 
@@ -189,81 +149,91 @@ export function $(id) {
   return document.querySelector(id)
 }
 
-export class V8CustomElement extends HTMLElement {
-  _updateTimeoutId;
-  _updateCallback = this.forceUpdate.bind(this);
-
-  constructor(templateText) {
-    super();
-    const shadowRoot = this.attachShadow({mode: 'open'});
-    shadowRoot.innerHTML = templateText;
-  }
-
-  $(id) {
-    return this.shadowRoot.querySelector(id);
-  }
-
-  querySelectorAll(query) {
-    return this.shadowRoot.querySelectorAll(query);
-  }
-
-  requestUpdate(useAnimation = false) {
-    if (useAnimation) {
-      window.cancelAnimationFrame(this._updateTimeoutId);
-      this._updateTimeoutId =
-          window.requestAnimationFrame(this._updateCallback);
-    } else {
-      // Use timeout tasks to asynchronously update the UI without blocking.
-      clearTimeout(this._updateTimeoutId);
-      const kDelayMs = 5;
-      this._updateTimeoutId = setTimeout(this._updateCallback, kDelayMs);
-    }
-  }
-
-  forceUpdate() {
-    this._update();
-  }
-
-  _update() {
-    throw Error('Subclass responsibility');
-  }
-}
+import {V8CustomElement} from '../../js/web-api-helper.mjs'
 
 export class CollapsableElement extends V8CustomElement {
   constructor(templateText) {
     super(templateText);
     this._hasPendingUpdate = false;
-    this._closer.onclick = _ => this.tryUpdateOnVisibilityChange();
+    this._closer.onclick = _ => this._requestUpdateIfVisible();
   }
 
   get _closer() {
     return this.$('#closer');
   }
 
-  _contentIsVisible() {
+  get _contentIsVisible() {
     return !this._closer.checked;
+  }
+
+  hide() {
+    if (this._contentIsVisible) {
+      this._closer.checked = true;
+      this._requestUpdateIfVisible();
+    }
+  }
+
+  show() {
+    if (!this._contentIsVisible) {
+      this._closer.checked = false;
+      this._requestUpdateIfVisible();
+    }
+    this.scrollIntoView({behavior: 'smooth', block: 'center'});
   }
 
   requestUpdate(useAnimation = false) {
     // A pending update will be resolved later, no need to try again.
     if (this._hasPendingUpdate) return;
     this._hasPendingUpdate = true;
-    this.requestUpdateIfVisible(useAnimation);
+    this._requestUpdateIfVisible(useAnimation);
   }
 
-  tryUpdateOnVisibilityChange() {
-    if (!this._hasPendingUpdate) return;
-    this.requestUpdateIfVisible(true);
-  }
-
-  requestUpdateIfVisible(useAnimation) {
-    if (!this._contentIsVisible()) return;
+  _requestUpdateIfVisible(useAnimation = true) {
+    if (!this._contentIsVisible) return;
     return super.requestUpdate(useAnimation);
   }
 
   forceUpdate() {
     this._hasPendingUpdate = false;
     super.forceUpdate();
+  }
+}
+
+export class ExpandableText {
+  constructor(node, string, limit = 200) {
+    this._node = node;
+    this._string = string;
+    this._delta = limit / 2;
+    this._start = 0;
+    this._end = string.length;
+    this._button = this._createExpandButton();
+    this.expand();
+  }
+
+  _createExpandButton() {
+    const button = DOM.element('button');
+    button.innerText = '...';
+    button.onclick = (e) => {
+      e.stopImmediatePropagation();
+      this.expand(e.shiftKey);
+    };
+    button.title = 'Expand text. Use SHIFT-click to show all.'
+    return button;
+  }
+
+  expand(showAll = false) {
+    DOM.removeAllChildren(this._node);
+    this._start = this._start + this._delta;
+    this._end = this._end - this._delta;
+    if (this._start >= this._end || showAll) {
+      this._node.innerText = this._string;
+      this._button.onclick = undefined;
+      return;
+    }
+    this._node.appendChild(DOM.text(this._string.substring(0, this._start)));
+    this._node.appendChild(this._button);
+    this._node.appendChild(
+        DOM.text(this._string.substring(this._end, this._string.length)));
   }
 }
 
@@ -340,8 +310,8 @@ export function gradientStopsFromGroups(
   const stops = [];
   for (let group of groups) {
     const color = colorFn(group.key);
-    increment += group.count;
-    let height = (increment / totalLength * kMaxHeight) | 0;
+    increment += group.length;
+    const height = (increment / totalLength * kMaxHeight) | 0;
     stops.push(`${color} ${lastHeight}${kUnit} ${height}${kUnit}`)
     lastHeight = height;
   }
@@ -349,3 +319,4 @@ export function gradientStopsFromGroups(
 }
 
 export * from '../helper.mjs';
+export * from '../../js/web-api-helper.mjs'

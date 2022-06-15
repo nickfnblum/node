@@ -4,7 +4,10 @@
 
 #include <iomanip>
 
-#include "include/v8.h"
+#include "include/v8-exception.h"
+#include "include/v8-local-handle.h"
+#include "include/v8-primitive.h"
+#include "include/v8-value.h"
 #include "src/api/api.h"
 #include "src/wasm/wasm-module-builder.h"
 #include "test/cctest/cctest.h"
@@ -268,11 +271,13 @@ class FastJSWasmCallTester {
     i::FLAG_allow_natives_syntax = true;
     i::FLAG_turbo_inline_js_wasm_calls = true;
     i::FLAG_stress_background_compile = false;
+    i::FLAG_concurrent_osr = false;  // Seems to mess with %ObserveNode.
   }
 
   void DeclareCallback(const char* name, FunctionSig* signature,
                        const char* module) {
-    builder_->AddImport(CStrVector(name), signature, CStrVector(module));
+    builder_->AddImport(base::CStrVector(name), signature,
+                        base::CStrVector(module));
   }
 
   void AddExportedFunction(const ExportedFunction& exported_func) {
@@ -281,7 +286,7 @@ class FastJSWasmCallTester {
     func->EmitCode(exported_func.code.data(),
                    static_cast<uint32_t>(exported_func.code.size()));
     func->Emit(kExprEnd);
-    builder_->AddExport(CStrVector(exported_func.name.c_str()),
+    builder_->AddExport(base::CStrVector(exported_func.name.c_str()),
                         kExternalFunction, func->func_index());
 
     // JS-to-Wasm inlining is disabled when targeting 32 bits if the Wasm

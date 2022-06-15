@@ -411,6 +411,12 @@ code is governed by a BSD-style license that can be found in the LICENSE file.
     }
 
     function diffColorFromRatio(ratio) {
+      if (ratio == Infinity) {
+        return '#ff0000';
+      }
+      if (ratio == -Infinity) {
+        return '#00ff00';
+      }
       if (ratio > 1) {
         // ratio > 1: #FFFFFF => #00FF00
         const red = clamp(((ratio - 1) * 255 * 10) | 0, 0, 255);
@@ -1537,23 +1543,27 @@ code is governed by a BSD-style license that can be found in the LICENSE file.
       // Instead of the default multi-page JSON:
       //    {"Version 1": { "Page 1": ..., ...}, "Version 2": {...}, ...}
       // In this case insert a single "Default" version as top-level entry.
-      let firstProperty = (object) => {
+      const  firstProperty = (object) => {
         for (let key in object) return object[key];
       };
-      let maybePage = firstProperty(json);
-      let maybeMetrics = firstProperty(maybePage);
-      let tempName = name ? name : new Date().toISOString();
-      tempName = window.prompt('Enter a name for the loaded file:', tempName);
-      if ('count' in maybeMetrics && 'duration' in maybeMetrics) {
+      const maybeMetrics = firstProperty(json);
+      const maybeMetric = firstProperty(maybeMetrics);
+      const tempName = name ? name : new Date().toISOString();
+      const getFileName =
+          () => window.prompt('Enter a name for the loaded file:', tempName);
+      if ('count' in maybeMetric && 'duration' in maybeMetric) {
         return {
-          [tempName]: json
+          [getFileName()]: json
         }
       }
       // Legacy fallback where the metrics are encoded as arrays:
       //  { PAGE: [[metric_name, ...], [...], ]}
-      if (Array.isArray(maybeMetrics)) {
+      // Also, make sure we don't have the versioned array-style:
+      // { VERSION: { PAGE: [[metric_name, ...], [...], ]}, ...}
+      const innerArray = firstProperty(maybeMetrics);
+      if (Array.isArray(maybeMetric) && !Array.isArray(innerArray)) {
         return {
-          [tempName]: json
+          [getFileName()]: json
         }
       }
       return json
@@ -1934,6 +1944,7 @@ code is governed by a BSD-style license that can be found in the LICENSE file.
           Group.groups.get('gc-background').entry(),
           Group.groups.get('gc').entry(),
           Group.groups.get('javascript').entry(),
+          Group.groups.get('websnapshot').entry(),
           Group.groups.get('runtime').entry(),
           this.unclassified
         ];
@@ -2260,6 +2271,7 @@ code is governed by a BSD-style license that can be found in the LICENSE file.
       new Group('GC', /GC_.*|AllocateInTargetSpace|GC/, "#00799c"));
     Group.add('javascript',
       new Group('JavaScript', /JS_Execution|JavaScript/, "#DD4477"));
+    Group.add('websnapshot', new Group('WebSnapshot', /.*Web.*/, "#E8E11C"));
     Group.add('runtime', new Group('V8 C++', /.*/, "#88BB00"));
     Group.add('blink',
       new Group('Blink RCS', /.*Blink_.*/, "#006600", false, false));
